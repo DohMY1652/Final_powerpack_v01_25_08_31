@@ -1,0 +1,14 @@
+# ROS2 colcon build artifacts
+build/
+install/
+log/
+
+# VSCode / CLion / IDE stuff
+.vscode/
+.idea/
+*.swp
+*.user
+
+# OS-specific
+.DS_Store
+Thumbs.db
