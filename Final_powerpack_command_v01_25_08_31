@@ -1,0 +1,30 @@
+# 새 브랜치 생성
+git checkout -b feature/controller-mpc
+
+# 코드 수정 후 커밋
+git add src/powerpack_controller
+git commit -m "Add Controller skeleton with MPC module structure"
+
+# 브랜치 푸시
+git push -u origin feature/controller-mpc
+
+
+통신 상태 확인 켜기
+ros2 param set /teensy_bridge monitor_enabled true 
+
+통신 상태 확인
+ros2 topic echo /teensy/b*/comm_stats             
+
+센서 값 확인
+ros2 topic echo /teensy/b*/sensors               
+
+제어 명령 값 확인
+ros2 topic echo /teensy/b*/pwm_cmd
+
+제어 명령 직접 지정
+ros2 topic pub /teensy/b*/pwm_cmd std_msgs/UInt16MultiArray \
+  "{data: [512,512,512,512,512,512,512,512,512,512,512,512]}"
+
+ros2 topic pub /teensy/b2/pwm_cmd std_msgs/UInt16MultiArray \
+  "{data: [512,512,512,512,512,512,512,512,512,512,512,512,512,512,512]}"
+

@@ -1,7 +1,7 @@
-#include "TeensyBridgeNode.hpp"
+#include "TeensyBridge.hpp"
 
 // serial open
-int TeensyBridgeNode::open_serial_or_die(const std::string& port) {
+int TeensyBridge::open_serial_or_die(const std::string& port) {
   int fd = ::open(port.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
   if (fd < 0) {
     throw std::runtime_error("open(" + port + ") failed: " + std::string(strerror(errno)));
@@ -16,7 +16,7 @@ int TeensyBridgeNode::open_serial_or_die(const std::string& port) {
 }
 
 // ctor
-TeensyBridgeNode::TeensyBridgeNode() : Node("teensy_bridge") {
+TeensyBridge::TeensyBridge() : Node("teensy_bridge") {
   ports_ = this->declare_parameter<std::vector<std::string>>(
       "ports", std::vector<std::string>{"/dev/ttyACM0","/dev/ttyACM1","/dev/ttyACM2"});
   board_ids_param_ = this->declare_parameter<std::vector<int64_t>>(
@@ -50,19 +50,19 @@ TeensyBridgeNode::TeensyBridgeNode() : Node("teensy_bridge") {
 
   // timers
   timer_ = this->create_wall_timer(std::chrono::milliseconds(period_ms_),
-                                   std::bind(&TeensyBridgeNode::on_timer, this));
+                                   std::bind(&TeensyBridge::on_timer, this));
   stats_timer_ = this->create_wall_timer(std::chrono::milliseconds(stats_period_ms_),
-                                         std::bind(&TeensyBridgeNode::on_stats_timer, this));
+                                         std::bind(&TeensyBridge::on_stats_timer, this));
 
   // dynamic params
   param_cb_handle_ = this->add_on_set_parameters_callback(
-      std::bind(&TeensyBridgeNode::on_param_change, this, std::placeholders::_1));
+      std::bind(&TeensyBridge::on_param_change, this, std::placeholders::_1));
 
   stats_window_start_ = std::chrono::steady_clock::now();
 }
 
 // dtor
-TeensyBridgeNode::~TeensyBridgeNode() {
+TeensyBridge::~TeensyBridge() {
   for (auto& uptr : boards_) {
     if (uptr && uptr->fd >= 0) close(uptr->fd);
     if (uptr) uptr->fd = -1;
@@ -70,7 +70,7 @@ TeensyBridgeNode::~TeensyBridgeNode() {
 }
 
 // autodetect mapping {port -> board slot} by reading SensorPacket.board_id
-void TeensyBridgeNode::autodetect_and_build_boards() {
+void TeensyBridge::autodetect_and_build_boards() {
   struct TempFd { std::string port; int fd{-1}; std::vector<uint8_t> rx; };
   std::vector<TempFd> opened;
   opened.reserve(ports_.size());
@@ -198,7 +198,7 @@ void TeensyBridgeNode::autodetect_and_build_boards() {
 }
 
 // cmd callback
-void TeensyBridgeNode::on_cmd(size_t idx, const std_msgs::msg::UInt16MultiArray::SharedPtr msg) {
+void TeensyBridge::on_cmd(size_t idx, const std_msgs::msg::UInt16MultiArray::SharedPtr msg) {
   if (idx >= boards_.size()) return;
   auto& b = *boards_[idx];
   std::lock_guard<std::mutex> lk(b.cmd_mtx);
@@ -213,7 +213,7 @@ void TeensyBridgeNode::on_cmd(size_t idx, const std_msgs::msg::UInt16MultiArray:
 }
 
 // monitor toggle
-void TeensyBridgeNode::on_monitor_enable(size_t idx, const std_msgs::msg::Bool::SharedPtr msg) {
+void TeensyBridge::on_monitor_enable(size_t idx, const std_msgs::msg::Bool::SharedPtr msg) {
   if (idx >= boards_.size()) return;
   boards_[idx]->monitor_enabled = msg->data;
   RCLCPP_INFO(this->get_logger(), "[b%zu] Comm monitor %s",
@@ -221,7 +221,7 @@ void TeensyBridgeNode::on_monitor_enable(size_t idx, const std_msgs::msg::Bool::
 }
 
 // parse RX sensor packets
-void TeensyBridgeNode::parse_sensor_packets(size_t idx) {
+void TeensyBridge::parse_sensor_packets(size_t idx) {
   auto& b = *boards_[idx];
   const size_t PKT = sizeof(SensorPacket);
   size_t i = 0;
@@ -250,7 +250,7 @@ void TeensyBridgeNode::parse_sensor_packets(size_t idx) {
 }
 
 // main loop timer
-void TeensyBridgeNode::on_timer() {
+void TeensyBridge::on_timer() {
   for (size_t idx = 0; idx < boards_.size(); ++idx) {
     auto& b = *boards_[idx];
 
@@ -293,7 +293,7 @@ void TeensyBridgeNode::on_timer() {
 }
 
 // stats timer
-void TeensyBridgeNode::on_stats_timer() {
+void TeensyBridge::on_stats_timer() {
   const auto now = std::chrono::steady_clock::now();
   double ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - stats_window_start_).count();
   if (ms <= 0.0) ms = static_cast<double>(stats_period_ms_);
@@ -343,7 +343,7 @@ void TeensyBridgeNode::on_stats_timer() {
 
 // param change
 rcl_interfaces::msg::SetParametersResult
-TeensyBridgeNode::on_param_change(const std::vector<rclcpp::Parameter>& params) {
+TeensyBridge::on_param_change(const std::vector<rclcpp::Parameter>& params) {
   rcl_interfaces::msg::SetParametersResult result; result.successful = true;
   for (const auto& p : params) {
     if (p.get_name() == "monitor_enabled") {
@@ -354,7 +354,7 @@ TeensyBridgeNode::on_param_change(const std::vector<rclcpp::Parameter>& params) 
       int v = p.as_int(); if (v < 100) v = 100;
       stats_period_ms_ = v;
       stats_timer_ = this->create_wall_timer(std::chrono::milliseconds(stats_period_ms_),
-                                             std::bind(&TeensyBridgeNode::on_stats_timer, this));
+                                             std::bind(&TeensyBridge::on_stats_timer, this));
       RCLCPP_INFO(this->get_logger(), "Comm monitor period set to %d ms.", stats_period_ms_);
     }
   }

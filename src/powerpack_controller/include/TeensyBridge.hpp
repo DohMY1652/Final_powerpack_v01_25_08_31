@@ -47,10 +47,10 @@ struct CommandPacket {
 };
 #pragma pack(pop)
 
-class TeensyBridgeNode : public rclcpp::Node {
+class TeensyBridge : public rclcpp::Node {
 public:
-  TeensyBridgeNode();
-  ~TeensyBridgeNode() override;
+  TeensyBridge();
+  ~TeensyBridge() override;
 
 private:
   static inline uint8_t xor_checksum(const uint8_t* p, size_t n_wo_cksum) {

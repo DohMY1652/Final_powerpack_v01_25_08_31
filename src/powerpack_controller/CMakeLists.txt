@@ -8,7 +8,7 @@ find_package(std_msgs REQUIRED)
 include_directories(include)
 
 add_executable(teensy_bridge_node
-  src/TeensyBridgeNode.cpp
+  src/TeensyBridge.cpp
   src/Controller.cpp
   src/main.cpp
   

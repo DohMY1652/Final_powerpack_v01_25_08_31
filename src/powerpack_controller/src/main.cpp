@@ -1,10 +1,10 @@
-#include "TeensyBridgeNode.hpp"
+#include "TeensyBridge.hpp"
 #include "Controller.hpp"
 
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
 
-  auto bridge     = std::make_shared<TeensyBridgeNode>();
+  auto bridge     = std::make_shared<TeensyBridge>();
   auto controller = std::make_shared<Controller>();
 
   // Single-threaded executor: deterministic callback ordering
