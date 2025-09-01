@@ -28,3 +28,5 @@ ros2 topic pub /teensy/b*/pwm_cmd std_msgs/UInt16MultiArray \
 ros2 topic pub /teensy/b2/pwm_cmd std_msgs/UInt16MultiArray \
   "{data: [512,512,512,512,512,512,512,512,512,512,512,512,512,512,512]}"
 
+
+릴리즈 모드 컴파일링

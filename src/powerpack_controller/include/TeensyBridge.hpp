@@ -49,7 +49,9 @@ struct CommandPacket {
 
 class TeensyBridge : public rclcpp::Node {
 public:
-  TeensyBridge();
+  // [수정됨] 모호성을 제거하기 위해 기본 생성자 선언을 삭제하고,
+  // NodeOptions를 받는 생성자만 남겨둡니다. 기본 인자 덕분에 여전히 new TeensyBridge() 호출이 가능합니다.
+  explicit TeensyBridge(const rclcpp::NodeOptions& opts = rclcpp::NodeOptions());
   ~TeensyBridge() override;
 
 private:

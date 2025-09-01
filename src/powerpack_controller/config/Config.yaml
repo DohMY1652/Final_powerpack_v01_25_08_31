@@ -1,0 +1,82 @@
+# [MODIFIED] Added 'pp_controller:' as the top-level key and indented all content.
+pp_controller:
+  ros__parameters:
+
+    # === per-channel calibration (map-based) ===
+    Sensor_calibration:
+      atm_offset: 101.325
+      b0:
+        "0": { offset: 1.0,  gain: 250.0 }
+        "1": { offset: 1.0,  gain: 250.0 }
+        "2": { offset: 1.0,  gain: 250.0 }
+        "3": { offset: 1.0,  gain: 250.0 }
+      b1:
+        "0": { offset: 1.0,  gain: -25.25 }
+        "1": { offset: 1.0,  gain: -25.25 }
+        "2": { offset: 1.0,  gain: -25.25 }
+        "3": { offset: 1.0,  gain: -25.25 }
+      b2:
+        "0": { offset: 1.0,  gain: 250.0 }
+        "1": { offset: 1.0,  gain: 250.0 }
+        "2": { offset: 1.0,  gain: 250.0 }
+        "3": { offset: 1.0,  gain: 250.0 }
+        "4": { offset: 1.0,  gain: 250.0 }   # pos line (핀20)
+        "5": { offset: 1.0,  gain: -25.25 }  # neg line (핀21)
+        "6": { offset: 1.0,  gain: 250.0 }   # macro line (핀22)
+
+    RefTcp:
+      enable: true
+      bind_address: "0.0.0.0"
+      port: 15000
+      expect_n: 12
+      scale: 0.01
+
+    LinePID:
+      pos:
+        kp: 0.8
+        ki: 0.2
+        kd: 0.0
+        ref: 150.0
+        pwm_index: 12
+      # 주의: 현재 코드엔 neg PID 사용 안 함(무시됨)
+      out_min: 0.0
+      out_max: 100.0
+
+    Reference_parameters:
+      frequency: 1000
+
+    PWM_parameters:
+      frequency: 1000
+      pid_pos_index: 18
+      pid_neg_index: 19
+
+    MPC_parameters:
+      NP: 5
+      n_x: 1
+      n_u: 3
+      Ts: 0.01
+      Q_values: 10.0
+      R_values: 1.0
+      pos_ku_micro: 0.5
+      pos_ku_macro: 0.5
+      pos_ku_atm: 2.0
+      neg_ku_micro: 3.0
+      neg_ku_macro: 3.0
+      neg_ku_atm: 6.0
+
+    channel_volume:
+      pos1: 100
+      pos2: 100
+      pos3: 100
+      neg1: 100
+      neg2: 100
+      neg3: 100
+
+    system_parameters:
+      sensor_print: true
+      reference_print: true
+      pwm_print: true
+      valve_operate: false
+
+    MacroSwitch:
+      threshold_kpa: 600.0

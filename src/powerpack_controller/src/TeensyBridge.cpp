@@ -15,8 +15,13 @@ int TeensyBridge::open_serial_or_die(const std::string& port) {
   return fd;
 }
 
-// ctor
-TeensyBridge::TeensyBridge() : Node("teensy_bridge") {
+// [수정됨] 헤더 파일에서 선언이 삭제되었으므로, 불필요한 기본 생성자 구현을 삭제합니다.
+// TeensyBridge::TeensyBridge() : TeensyBridge(rclcpp::NodeOptions{}) {}
+
+// ★ 노드 이름을 "teensy_bridge"로 명확히 지정
+TeensyBridge::TeensyBridge(const rclcpp::NodeOptions& opts)
+: rclcpp::Node("teensy_bridge", opts)
+{
   ports_ = this->declare_parameter<std::vector<std::string>>(
       "ports", std::vector<std::string>{"/dev/ttyACM0","/dev/ttyACM1","/dev/ttyACM2"});
   board_ids_param_ = this->declare_parameter<std::vector<int64_t>>(
