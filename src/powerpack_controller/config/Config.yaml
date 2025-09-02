@@ -6,23 +6,23 @@ pp_controller:
     Sensor_calibration:
       atm_offset: 101.325
       b0:
-        "0": { offset: 1.0,  gain: 250.0 }
-        "1": { offset: 1.0,  gain: 250.0 }
-        "2": { offset: 1.0,  gain: 250.0 }
-        "3": { offset: 1.0,  gain: 250.0 }
+        "0": { offset: 877,  gain: 250.0 }
+        "1": { offset: 860,  gain: 250.0 }
+        "2": { offset: 974,  gain: 250.0 }
+        "3": { offset: 897,  gain: 250.0 }
       b1:
-        "0": { offset: 1.0,  gain: -25.25 }
-        "1": { offset: 1.0,  gain: -25.25 }
-        "2": { offset: 1.0,  gain: -25.25 }
-        "3": { offset: 1.0,  gain: -25.25 }
+        "0": { offset: 841,  gain: 250.0   }
+        "1": { offset: 862,  gain: 250.0 }
+        "2": { offset: 426,  gain: -25.25 }
+        "3": { offset: 582,  gain: -25.25 }
       b2:
-        "0": { offset: 1.0,  gain: 250.0 }
-        "1": { offset: 1.0,  gain: 250.0 }
-        "2": { offset: 1.0,  gain: 250.0 }
-        "3": { offset: 1.0,  gain: 250.0 }
-        "4": { offset: 1.0,  gain: 250.0 }   # pos line (핀20)
-        "5": { offset: 1.0,  gain: -25.25 }  # neg line (핀21)
-        "6": { offset: 1.0,  gain: 250.0 }   # macro line (핀22)
+        "0": { offset: 440,  gain: -25.25 }
+        "1": { offset: 411,  gain: -25.25 }
+        "2": { offset: 412,  gain: -25.25 }
+        "3": { offset: 418,  gain: -25.25 }
+        "4": { offset: 440,  gain: 250.0 }   # pos line (핀20)
+        "5": { offset: 432,  gain: -25.25 }  # neg line (핀21)
+        "6": { offset: 492,  gain: 250.0 }   # macro line (핀22)
 
     RefTcp:
       enable: true

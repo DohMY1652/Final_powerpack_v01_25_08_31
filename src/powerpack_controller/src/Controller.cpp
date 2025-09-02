@@ -475,6 +475,14 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   load_board("Sensor_calibration.b1", sensor_.b1, ANALOG_B1);
   load_board("Sensor_calibration.b2", sensor_.b2, ANALOG_B2);
 
+  // =================================================================
+  // [수정됨] 파라미터 로딩 확인을 위한 로그 출력 코드 추가
+  // =================================================================
+  RCLCPP_INFO(this->get_logger(), "================ PARAMETER DIAGNOSIS ================");
+  RCLCPP_INFO(this->get_logger(), "Loaded parameter [Sensor_calibration.b0.0.offset]: %f", sensor_.b0[0].offset);
+  RCLCPP_INFO(this->get_logger(), "=====================================================");
+
+
   // Reference_parameters
   ref_freq_hz_ = get_param_or<int>(this, "Reference_parameters.frequency", 1000);
 
@@ -556,6 +564,11 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   pub_b2_ = create_publisher<std_msgs::msg::UInt16MultiArray>("teensy/b2/pwm_cmd", 5);
   pub_mpc_refs_ = create_publisher<std_msgs::msg::Float64MultiArray>("controller/mpc_refs_kpa", 10);
 
+  // [수정됨] 보정된 kPa 값을 발행할 퍼블리셔 초기화
+  pub_kpa_b0_ = create_publisher<std_msgs::msg::Float64MultiArray>("controller/b0/sensors_kpa", 10);
+  pub_kpa_b1_ = create_publisher<std_msgs::msg::Float64MultiArray>("controller/b1/sensors_kpa", 10);
+  pub_kpa_b2_ = create_publisher<std_msgs::msg::Float64MultiArray>("controller/b2/sensors_kpa", 10);
+
   // thread pool
   size_t nth = std::max<size_t>(2, std::min<size_t>(4, std::thread::hardware_concurrency()));
   std::vector<int> pins; if (enable_thread_pinning_) for (auto v: cpu_pins_param_) pins.push_back((int)v);
@@ -569,6 +582,9 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   "RefTcp: enable=%d bind=%s port=%d expect_n=%d scale=%.3f",
   (int)ref_tcp_cfg_.enable, ref_tcp_cfg_.bind_address.c_str(),
   ref_tcp_cfg_.port, ref_tcp_cfg_.expect_n, ref_tcp_cfg_.scale);
+  
+  // [수정됨] 생성자(초기화)가 성공적으로 완료되었는지 확인하는 로그
+  RCLCPP_INFO(this->get_logger(), "Controller node initialization complete.");
 }
 
 void Controller::build_mpcs() {
@@ -640,6 +656,22 @@ void Controller::on_timer() {
     snap.b2 = sensors_b2_;
   }
 
+  // [수정됨] 보정된 센서 값을 kPa 단위로 변환하여 토픽으로 발행
+  {
+    std_msgs::msg::Float64MultiArray msg_b0, msg_b1, msg_b2;
+    msg_b0.data.reserve(ANALOG_B0);
+    msg_b1.data.reserve(ANALOG_B1);
+    msg_b2.data.reserve(ANALOG_B2);
+
+    for(int i=0; i<ANALOG_B0; ++i) msg_b0.data.push_back(sensor_.kpa_b0(i, snap.b0[i]));
+    for(int i=0; i<ANALOG_B1; ++i) msg_b1.data.push_back(sensor_.kpa_b1(i, snap.b1[i]));
+    for(int i=0; i<ANALOG_B2; ++i) msg_b2.data.push_back(sensor_.kpa_b2(i, snap.b2[i]));
+
+    pub_kpa_b0_->publish(msg_b0);
+    pub_kpa_b1_->publish(msg_b1);
+    pub_kpa_b2_->publish(msg_b2);
+  }
+
   // 2) 인덱스 안전 접근자
   auto get_u16_b0 = [&](int idx)->uint16_t {
     return (idx >= 0 && idx < ANALOG_B0) ? snap.b0[(size_t)idx] : 0;
@@ -664,18 +696,18 @@ void Controller::on_timer() {
   }
 
   // 4) TCP로 들어온 MPC별 ref 스냅샷
-std::array<double, MPC_TOTAL> ref_snapshot{}; // default 0
-{
-  std::lock_guard<std::mutex> lk(mpc_ref_mtx_);
-  ref_snapshot = mpc_ref_kpa_;
-} // <-- 여기서 잠금 해제
+  std::array<double, MPC_TOTAL> ref_snapshot{}; // default 0
+  {
+    std::lock_guard<std::mutex> lk(mpc_ref_mtx_);
+    ref_snapshot = mpc_ref_kpa_;
+  } // <-- 여기서 잠금 해제
 
-// 퍼블리시는 잠금 밖에서
-if (pub_mpc_refs_) {
-  std_msgs::msg::Float64MultiArray msg; // 정확도 유지용
-  msg.data.assign(ref_snapshot.begin(), ref_snapshot.end()); // 12개(kPa)
-  pub_mpc_refs_->publish(msg);
-}
+  // 퍼블리시는 잠금 밖에서
+  if (pub_mpc_refs_) {
+    std_msgs::msg::Float64MultiArray msg; // 정확도 유지용
+    msg.data.assign(ref_snapshot.begin(), ref_snapshot.end()); // 12개(kPa)
+    pub_mpc_refs_->publish(msg);
+  }
 
   // 5) 페이즈 분할 실행(250 Hz = 4페이즈) : MPC만 병렬
   const int phase = static_cast<int>(tick_ % MPC_PHASES);

@@ -296,6 +296,11 @@ private:
   rclcpp::Publisher<std_msgs::msg::UInt16MultiArray>::SharedPtr pub_b2_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_mpc_refs_;
 
+  // [수정됨] 보정된 kPa 값을 발행할 퍼블리셔 추가
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_kpa_b0_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_kpa_b1_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_kpa_b2_;
+
   // Thread pool
   std::unique_ptr<ThreadPool> pool_;
 
