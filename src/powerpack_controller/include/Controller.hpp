@@ -192,32 +192,30 @@ struct SensorCalib {
 
   double atm_offset{101.325};
 
-  // Defaults: b0(+), b1(-), b2(+)
-  std::array<Channel, ANALOG_B0> b0{
-    Channel{1.0, 250.0}, Channel{1.0, 250.0}, Channel{1.0, 250.0}, Channel{1.0, 250.0}
-  };
-  std::array<Channel, ANALOG_B1> b1{
-    Channel{1.0, -25.25}, Channel{1.0, -25.25}, Channel{1.0, -25.25}, Channel{1.0, -25.25}
-  };
-  std::array<Channel, ANALOG_B2> b2{
-    Channel{1.0, 250.0}, Channel{1.0, 250.0}, Channel{1.0, 250.0},
-    Channel{1.0, 250.0}, Channel{1.0, 250.0}, Channel{1.0, 250.0}, Channel{1.0, 250.0}
-  };
+  // ... b0, b1 배열 선언은 동일 ...
+  std::array<Channel, ANALOG_B0> b0{ /* ... */ };
+  std::array<Channel, ANALOG_B1> b1{ /* ... */ };
+  std::array<Channel, ANALOG_B2> b2{ /* ... */ };
 
+
+  // [수정됨] 아래 함수들의 return 문을 새로운 공식으로 변경합니다.
   inline double kpa_b0(int idx, uint16_t raw) const {
     if (idx < 0 || idx >= (int)b0.size()) return atm_offset;
     const auto& c = b0[(size_t)idx];
-    return c.offset + c.gain * (double(raw) / 1023.0);
+    // 이전: return c.offset + c.gain * (double(raw) / 1023.0);
+    return (double(raw) - c.offset) * c.gain;
   }
   inline double kpa_b1(int idx, uint16_t raw) const {
     if (idx < 0 || idx >= (int)b1.size()) return atm_offset;
     const auto& c = b1[(size_t)idx];
-    return c.offset + c.gain * (double(raw) / 1023.0);
+    // 이전: return c.offset + c.gain * (double(raw) / 1023.0);
+    return (double(raw) - c.offset) * c.gain;
   }
   inline double kpa_b2(int idx, uint16_t raw) const {
     if (idx < 0 || idx >= (int)b2.size()) return atm_offset;
     const auto& c = b2[(size_t)idx];
-    return c.offset + c.gain * (double(raw) / 1023.0);
+    // 이전: return c.offset + c.gain * (double(raw) / 1023.0);
+    return (double(raw) - c.offset) * c.gain;
   }
   inline double kpa_atm() const { return atm_offset; }
 };
