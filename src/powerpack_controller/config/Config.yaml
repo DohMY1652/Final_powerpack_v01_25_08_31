@@ -2,27 +2,29 @@
 pp_controller:
   ros__parameters:
 
+    active_mpc_channels: [0,1,2,3,4,5,6,7,8,9,10,11]
+
     # === per-channel calibration (map-based) ===
     Sensor_calibration:
       atm_offset: 101.325
       b0:
-        "0": { offset: 862.0,  gain: 0.3055 }
-        "1": { offset: 854.0,  gain: 0.3055 }
-        "2": { offset: 855.0,  gain: 0.3055 }
-        "3": { offset: 868.0,  gain: 0.3055 }
+        "0": { offset: 868.0,  gain: 0.43795 }
+        "1": { offset: 856.0,  gain: 0.43795 }
+        "2": { offset: 865.0,  gain: 0.43795 }
+        "3": { offset: 857.0,  gain: 0.43795 }
       b1:
-        "0": { offset: 844.0,  gain: 0.3055   }
-        "1": { offset: 855.0,  gain: 0.3055 }
-        "2": { offset: 443.0,  gain: -0.00276 }
-        "3": { offset: 458.0,  gain: -0.00276 }
+        "0": { offset: 832.0,  gain: 0.43795   }
+        "1": { offset: 856.0,  gain: 0.43795 }
+        "2": { offset: 448.0,  gain: -0.002635 }
+        "3": { offset: 458.0,  gain: -0.002635 }
       b2:
-        "0": { offset: 414.0,  gain: -0.00276 }
-        "1": { offset: 429.0,  gain: -0.00276 }
-        "2": { offset: 423.0,  gain: -0.00276 }
-        "3": { offset: 450.0,  gain: -0.00276 }
-        "4": { offset: 434.0,  gain: 0.272 }   # pos line (핀20)
-        "5": { offset: 429.0,  gain: -0.00276 }  # neg line (핀21)
-        "6": { offset: 493.0,  gain: 0.272 }   # macro line (핀22)
+        "0": { offset: 435.0,  gain: -0.002635 }
+        "1": { offset: 433.0,  gain: -0.002635 }
+        "2": { offset: 434.0,  gain: -0.002635 }
+        "3": { offset: 434.0,  gain: -0.002635 }
+        "4": { offset: 829.0,  gain: 0.3066 }   # pos line (핀20)
+        "5": { offset: 817.0,  gain: -0.0312 }  # neg line (핀21)
+        "6": { offset: 487.0,  gain: 0.640 }   # macro line (핀22)
 
     RefTcp:
       enable: true
@@ -33,12 +35,20 @@ pp_controller:
 
     LinePID:
       pos:
-        kp: 0.8
-        ki: 0.2
+        kp: 0.4
+        ki: 0.1
         kd: 0.0
-        ref: 150.0
+        ref: 400.0
         pwm_index: 12
       # 주의: 현재 코드엔 neg PID 사용 안 함(무시됨)
+
+      # [추가됨] 음압 라인 PID 설정
+      neg:
+        kp: 0.8      # 예시값, 실제 시스템에 맞게 튜닝 필요
+        ki: 0.2      # 예시값, 실제 시스템에 맞게 튜닝 필요
+        kd: 0.0      # 예시값, 실제 시스템에 맞게 튜닝 필요
+        ref: 40.0      # 목표 음압(절대압 기준), 예시값
+        pwm_index: 13  # 보드2의 14번째 PWM 채널
       out_min: 0.0
       out_max: 100.0
 
@@ -55,11 +65,11 @@ pp_controller:
       n_x: 1
       n_u: 3
       Ts: 0.01
-      Q_values: 10.0
+      Q_values: 20.0
       R_values: 1.0
-      pos_ku_micro: 0.5
-      pos_ku_macro: 0.5
-      pos_ku_atm: 2.0
+      pos_ku_micro: 2.0
+      pos_ku_macro: 2.0
+      pos_ku_atm: 3.0
       neg_ku_micro: 3.0
       neg_ku_macro: 3.0
       neg_ku_atm: 6.0
@@ -68,9 +78,15 @@ pp_controller:
       pos1: 100
       pos2: 100
       pos3: 100
+      pos4: 100
+      pos5: 100
+      pos6: 100
       neg1: 100
       neg2: 100
       neg3: 100
+      neg4: 100
+      neg5: 100
+      neg6: 100
 
     system_parameters:
       sensor_print: true
