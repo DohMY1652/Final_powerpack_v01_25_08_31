@@ -211,27 +211,75 @@ float AcadosMpc::read_current_pressure(const SensorSnapshot&) const {
   return current_P_now_;
 }
 
-std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micro, float P_macro) const {
+// ==============================================================================
+// [수정됨] u_ref 계산 로직에 I 게인을 추가하고 안티 와인드업을 구현
+// ==============================================================================
+std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micro, float P_macro) {
   const float Pref = cfg_.ref_value;
   float err = Pref - P_now;
-  float ku_mi = cfg_.is_positive ? cfg_.pos_ku_micro : cfg_.neg_ku_micro;
-  float ku_ma = cfg_.is_positive ? cfg_.pos_ku_macro : cfg_.neg_ku_macro;
-  float ku_at = cfg_.is_positive ? cfg_.pos_ku_atm   : cfg_.neg_ku_atm;
+
+  // 1. 오차 적분
+  // MPC 스텝 시간(Ts)을 곱하여 적분항을 업데이트
+  error_integral_ += err * cfg_.Ts;
+
+  // 2. P, I 게인 가져오기
+  const float ku_mi = cfg_.is_positive ? cfg_.pos_ku_micro : cfg_.neg_ku_micro;
+  const float ku_ma = cfg_.is_positive ? cfg_.pos_ku_macro : cfg_.neg_ku_macro;
+  const float ku_at = cfg_.is_positive ? cfg_.pos_ku_atm   : cfg_.neg_ku_atm;
+  const float ki_mi = cfg_.is_positive ? cfg_.pos_ki_micro : cfg_.neg_ki_micro;
+  const float ki_ma = cfg_.is_positive ? cfg_.pos_ki_macro : cfg_.neg_ki_macro;
+  const float ki_at = cfg_.is_positive ? cfg_.pos_ki_atm   : cfg_.neg_ki_atm;
 
   float u_mi = 0.f, u_ma = 0.f, u_at = 0.f;
-  if (cfg_.is_positive) {
-    if (err > 0.f) { u_mi = ku_mi*err; u_ma = ku_ma*err; u_at = 0.f; }
-    else           { u_mi = 0.f;       u_ma = 0.f;       u_at = ku_at*(-err); }
-  } else {
-    if (err < 0.f) { u_mi = 0.f; u_ma = 0.f; u_at = ku_at*(-err); }
-    else           { u_mi = ku_mi*err; u_ma = ku_ma*err; u_at = 0.f; }
+
+  // 3. PI 제어 출력 계산
+  if (cfg_.is_positive) { // 양압 챔버
+    if (err > 0.f) { // 가압 시
+      u_mi = ku_mi * err + ki_mi * error_integral_;
+      u_ma = ku_ma * err + ki_ma * error_integral_;
+      u_at = 0.f;
+    }
+    else { // 감압 시
+      u_mi = 0.f;
+      u_ma = 0.f;
+      // 대기압 밸브의 오차는 (P_now - Pref) = -err 이므로, 적분항도 부호를 뒤집어 사용
+      u_at = ku_at * (-err) + ki_at * (-error_integral_);
+    }
+  } else { // 음압 챔버
+    if (err < 0.f) { // 대기로 감압 시
+      u_mi = 0.f;
+      u_ma = 0.f;
+      u_at = ku_at * (-err) + ki_at * (-error_integral_);
+    }
+    else { // 진공 펌프로 흡입 시
+      u_mi = ku_mi * err + ki_mi * error_integral_;
+      u_ma = ku_ma * err + ki_ma * error_integral_;
+      u_at = 0.f;
+    }
   }
   (void)P_micro; (void)P_macro;
-  u_mi = std::clamp(u_mi, 0.f, 100.f);
-  u_ma = std::clamp(u_ma, 0.f, 100.f);
-  u_at = std::clamp(u_at, 0.f, 100.f);
-  return {u_mi, u_ma, u_at};
+
+  // 4. 출력 클램핑
+  float u_mi_clamped = std::clamp(u_mi, 0.f, 100.f);
+  float u_ma_clamped = std::clamp(u_ma, 0.f, 100.f);
+  float u_at_clamped = std::clamp(u_at, 0.f, 100.f);
+
+  // 5. 안티 와인드업 (Anti-windup)
+  // 만약 출력이 0~100 범위를 벗어나 잘렸고(clamping),
+  // 오차가 계속해서 적분항을 잘못된 방향으로 키우고 있다면, 적분항을 되돌려놓는다.
+  if (ki_mi != 0.f && u_mi != u_mi_clamped) {
+      error_integral_ = (u_mi_clamped - ku_mi * err) / ki_mi;
+  }
+  if (ki_ma != 0.f && u_ma != u_ma_clamped) {
+      error_integral_ = (u_ma_clamped - ku_ma * err) / ki_ma;
+  }
+  if (ki_at != 0.f && u_at != u_at_clamped) {
+      error_integral_ = -( (u_at_clamped - ku_at * (-err)) / ki_at );
+  }
+
+  return {u_mi_clamped, u_ma_clamped, u_at_clamped};
 }
+
 
 void AcadosMpc::build_mpc_qp(const std::vector<float>& A_seq,
                              const std::vector<Eigen::RowVector3f>& B_seq,
@@ -366,13 +414,11 @@ void RefTcpServer::run_() {
   addr.sin_family = AF_INET;
   addr.sin_port   = htons((uint16_t)cfg_.port);
 
-  // bind_address가 비었거나 0.0.0.0이면 모든 인터페이스
   if (cfg_.bind_address.empty() || cfg_.bind_address == "0.0.0.0") {
     addr.sin_addr.s_addr = INADDR_ANY;
   } else {
     in_addr ina{};
     if (::inet_aton(cfg_.bind_address.c_str(), &ina) == 0) {
-      // 파싱 실패 시 안전하게 ANY로
       addr.sin_addr.s_addr = INADDR_ANY;
     } else {
       addr.sin_addr = ina;
@@ -403,7 +449,6 @@ void RefTcpServer::run_() {
       if (n > 0) {
         buf.append(tmp, tmp + n);
 
-        // 줄 단위 파싱
         size_t pos = 0;
         while (true) {
           auto nl = buf.find('\n', pos);
@@ -414,16 +459,15 @@ void RefTcpServer::run_() {
           std::string line = buf.substr(pos, nl - pos);
           pos = nl + 1;
 
-          // 공백/구분자 상관없이 정수 12개(양6, 음6) 파싱 → scale(0.01) 곱해 kPa
-          std::array<double, MPC_TOTAL> out{}; // MPC_TOTAL == 12
+          std::array<double, MPC_TOTAL> out{};
           int cnt = 0;
           const char* s = line.c_str();
           char* endp = nullptr;
 
           while (*s && cnt < cfg_.expect_n) {
-            long v = std::strtol(s, &endp, 10); // 압력*100 정수
-            if (endp == s) { ++s; continue; }   // 구분자 스킵
-            out[(size_t)cnt] = (double)v * cfg_.scale; // → kPa
+            long v = std::strtol(s, &endp, 10);
+            if (endp == s) { ++s; continue; }
+            out[(size_t)cnt] = (double)v * cfg_.scale;
             ++cnt;
             s = endp;
           }
@@ -431,10 +475,9 @@ void RefTcpServer::run_() {
           if (cnt == cfg_.expect_n) {
             cb_(out);
           }
-          // 개수가 모자라면 버퍼 꼬리로 남겨 다음 줄에서 계속 시도
         }
       } else if (n == 0) {
-        ::close(client_fd_); client_fd_ = -1; break; // 클라이언트 종료
+        ::close(client_fd_); client_fd_ = -1; break;
       } else {
         if (errno == EINTR) continue;
         std::this_thread::sleep_for(2ms);
@@ -480,10 +523,7 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   RCLCPP_INFO(this->get_logger(), "Loaded parameter [Sensor_calibration.b0.0.offset]: %f", sensor_.b0[0].offset);
   RCLCPP_INFO(this->get_logger(), "=====================================================");
 
-  // Reference_parameters
   ref_freq_hz_ = get_param_or<int>(this, "Reference_parameters.frequency", 1000);
-
-  // PWM_parameters (legacy placeholders)
   pwm_freq_hz_   = get_param_or<int>(this, "PWM_parameters.frequency", 1000);
   pid_pos_index_ = get_param_or<int>(this, "PWM_parameters.pid_pos_index", 18);
   pid_neg_index_ = get_param_or<int>(this, "PWM_parameters.pid_neg_index", 19);
@@ -502,7 +542,14 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   mpc_.neg_ku_macro = get_param_or<double>(this, "MPC_parameters.neg_ku_macro", 3.0);
   mpc_.neg_ku_atm   = get_param_or<double>(this, "MPC_parameters.neg_ku_atm",   6.0);
 
-  // channel_volume (mL → m^3)
+  // [수정됨] YAML 파일에서 I 게인 파라미터 로드
+  mpc_.pos_ki_micro = get_param_or<double>(this, "MPC_parameters.pos_ki_micro", 0.0);
+  mpc_.pos_ki_macro = get_param_or<double>(this, "MPC_parameters.pos_ki_macro", 0.0);
+  mpc_.pos_ki_atm   = get_param_or<double>(this, "MPC_parameters.pos_ki_atm",   0.0);
+  mpc_.neg_ki_micro = get_param_or<double>(this, "MPC_parameters.neg_ki_micro", 0.0);
+  mpc_.neg_ki_macro = get_param_or<double>(this, "MPC_parameters.neg_ki_macro", 0.0);
+  mpc_.neg_ki_atm   = get_param_or<double>(this, "MPC_parameters.neg_ki_atm",   0.0);
+
   auto get_ml = [&](const char* key, double def_ml){
     return get_param_or<double>(this, std::string("channel_volume.")+key, def_ml);
   };
@@ -513,24 +560,21 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   vol_neg_ml_[1] = get_ml("neg2", 100.0);
   vol_neg_ml_[2] = get_ml("neg3", 100.0);
 
-  // system_parameters
   sys_sensor_print_    = get_param_or<bool>(this, "system_parameters.sensor_print",    true);
   sys_reference_print_ = get_param_or<bool>(this, "system_parameters.reference_print", true);
   sys_pwm_print_       = get_param_or<bool>(this, "system_parameters.pwm_print",       true);
   sys_valve_operate_   = get_param_or<bool>(this, "system_parameters.valve_operate",   false);
 
-  // === Macro ON/OFF ===
   macro_switch_threshold_kpa_ = get_param_or<double>(this, "MacroSwitch.threshold_kpa", 120.0);
-  macro_switch_pwm_index_     = get_param_or<int>(this,    "MacroSwitch.pwm_index",     13); // 14th
+  macro_switch_pwm_index_     = get_param_or<int>(this,    "MacroSwitch.pwm_index",     13);
 
-  // === Line PID (Pos): board2 PWM[12] ===
   pid_pos_.kp  = get_param_or<double>(this, "LinePID.pos.kp",  0.5);
   pid_pos_.ki  = get_param_or<double>(this, "LinePID.pos.ki",  0.0);
   pid_pos_.kd  = get_param_or<double>(this, "LinePID.pos.kd",  0.0);
   pid_pos_.ref = get_param_or<double>(this, "LinePID.pos.ref", 150.0);
   pid_out_min_ = get_param_or<double>(this, "LinePID.out_min", 0.0);
   pid_out_max_ = get_param_or<double>(this, "LinePID.out_max", 100.0);
-  pid_pos_pwm_index_ = get_param_or<int>(this, "LinePID.pos.pwm_index", 12); // 13th
+  pid_pos_pwm_index_ = get_param_or<int>(this, "LinePID.pos.pwm_index", 12);
 
   pid_neg_.kp  = get_param_or<double>(this, "LinePID.neg.kp",  0.5);
   pid_neg_.ki  = get_param_or<double>(this, "LinePID.neg.ki",  0.0);
@@ -541,11 +585,10 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   pid_out_min_ = get_param_or<double>(this, "LinePID.out_min", 0.0);
   pid_out_max_ = get_param_or<double>(this, "LinePID.out_max", 100.0);
 
-  // === Reference TCP ===
   ref_tcp_cfg_.enable       = get_param_or<bool>(this,  "RefTcp.enable",       false);
   ref_tcp_cfg_.bind_address = get_param_or<std::string>(this, "RefTcp.bind_address", "0.0.0.0");
   ref_tcp_cfg_.port         = get_param_or<int>(this,   "RefTcp.port",         15000);
-  ref_tcp_cfg_.expect_n     = get_param_or<int>(this,   "RefTcp.expect_n",     MPC_TOTAL); // 12
+  ref_tcp_cfg_.expect_n     = get_param_or<int>(this,   "RefTcp.expect_n",     MPC_TOTAL);
   ref_tcp_cfg_.scale        = get_param_or<double>(this,"RefTcp.scale",        0.01);
 
   if (ref_tcp_cfg_.enable) {
@@ -558,7 +601,6 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
     );
   }
 
-  // QoS/IO
   auto reliable = rclcpp::QoS(rclcpp::QoSInitialization::from_rmw(rmw_qos_profile_default)).reliable().keep_last(5);
   sub_b0_ = create_subscription<std_msgs::msg::UInt16MultiArray>("teensy/b0/sensors", reliable, std::bind(&Controller::on_sensor_b0, this, _1));
   sub_b1_ = create_subscription<std_msgs::msg::UInt16MultiArray>("teensy/b1/sensors", reliable, std::bind(&Controller::on_sensor_b1, this, _1));
@@ -573,7 +615,6 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   pub_kpa_b1_ = create_publisher<std_msgs::msg::Float64MultiArray>("controller/b1/sensors_kpa", 10);
   pub_kpa_b2_ = create_publisher<std_msgs::msg::Float64MultiArray>("controller/b2/sensors_kpa", 10);
 
-  // thread pool
   size_t nth = std::max<size_t>(2, std::min<size_t>(4, std::thread::hardware_concurrency()));
   std::vector<int> pins; if (enable_thread_pinning_) for (auto v: cpu_pins_param_) pins.push_back((int)v);
   pool_ = std::make_unique<ThreadPool>(nth, pins);
@@ -633,6 +674,14 @@ void Controller::build_mpcs() {
       cfg.neg_ku_macro  = (float)mpc_.neg_ku_macro;
       cfg.neg_ku_atm    = (float)mpc_.neg_ku_atm;
 
+      // [수정됨] MPC 인스턴스 생성 시 I 게인 설정
+      cfg.pos_ki_micro  = (float)mpc_.pos_ki_micro;
+      cfg.pos_ki_macro  = (float)mpc_.pos_ki_macro;
+      cfg.pos_ki_atm    = (float)mpc_.pos_ki_atm;
+      cfg.neg_ki_micro  = (float)mpc_.neg_ki_micro;
+      cfg.neg_ki_macro  = (float)mpc_.neg_ki_macro;
+      cfg.neg_ki_atm    = (float)mpc_.neg_ki_atm;
+
       cfg.ref_value = 0.0f;
       cfg.du_min = -30.f; cfg.du_max = +30.f;
       cfg.u_abs_min = 0.f; cfg.u_abs_max = 100.f;
@@ -664,7 +713,6 @@ void Controller::on_sensor_b2(const std_msgs::msg::UInt16MultiArray::SharedPtr m
 }
 
 void Controller::on_timer() {
-  // 1) 스냅샷
   SensorSnapshot snap;
   {
     std::lock_guard<std::mutex> lk(sensors_mtx_);
@@ -688,7 +736,6 @@ void Controller::on_timer() {
     pub_kpa_b2_->publish(msg_b2);
   }
 
-  // 2) 인덱스 안전 접근자
   auto get_u16_b0 = [&](int idx)->uint16_t {
     return (idx >= 0 && idx < ANALOG_B0) ? snap.b0[(size_t)idx] : 0;
   };
@@ -699,19 +746,16 @@ void Controller::on_timer() {
     return (idx >= 0 && idx < ANALOG_B2) ? snap.b2[(size_t)idx] : 0;
   };
 
-  // 3) 공용 라인압력 (b2 뒤 3채널: 4/5/6)
   const double P_line_pos_kPa   = sensor_.kpa_b2(4, get_u16_b2(4));
   const double P_line_neg_kPa   = sensor_.kpa_b2(5, get_u16_b2(5));
   const double P_line_macro_kPa = sensor_.kpa_b2(6, get_u16_b2(6));
   const double P_atm_kPa        = sensor_.kpa_atm();
 
-  // 3-1) 14번째 채널(인덱스13): 매크로 압력 스위치 ON/OFF
   if (macro_switch_pwm_index_ >= 0 && macro_switch_pwm_index_ < PWM_MAX_B2) {
     const bool macro_on = (P_line_macro_kPa > macro_switch_threshold_kpa_);
     zoh_b2_[(size_t)macro_switch_pwm_index_] = macro_on ? 1023 : 0;
   }
 
-  // 4) TCP로 들어온 MPC별 ref 스냅샷
   std::array<double, MPC_TOTAL> ref_snapshot{};
   {
     std::lock_guard<std::mutex> lk(mpc_ref_mtx_);
@@ -724,7 +768,6 @@ void Controller::on_timer() {
     pub_mpc_refs_->publish(msg);
   }
 
-  // 5) 페이즈 분할 실행(250 Hz = 4페이즈) : MPC만 병렬
   const int phase = static_cast<int>(tick_ % MPC_PHASES);
   std::vector<std::function<void()>> tasks;
   
@@ -773,10 +816,8 @@ void Controller::on_timer() {
     });
   }
 
-  // 6) 병렬 실행 대기 (MPC)
   pool_->run_batch_and_wait(tasks);
   
-  // 7) 1kHz 라인압 PID (board 2, PWM[12] = 13th)
   const double dt = std::max(1e-6, (double)period_ms_ / 1000.0);
   {
     const double err = pid_pos_.ref - P_line_pos_kPa;
@@ -828,10 +869,8 @@ void Controller::on_timer() {
     }
   }
 
-  // 8) 1kHz 내부 루프 보정(현재 0)
   inner_loop_1khz(snap, static_cast<float>(period_ms_));
 
-  // 9) 최종 명령 합성 및 publish
   for (int i = 0; i < PWM_MAX_B0; ++i) cmds_b0_[i] = clamp_pwm(static_cast<int>(zoh_b0_[i]) + inner_b0_[i]);
   for (int i = 0; i < PWM_MAX_B1; ++i) cmds_b1_[i] = clamp_pwm(static_cast<int>(zoh_b1_[i]) + inner_b1_[i]);
   for (int i = 0; i < PWM_MAX_B2; ++i) cmds_b2_[i] = clamp_pwm(static_cast<int>(zoh_b2_[i]) + inner_b2_[i]);

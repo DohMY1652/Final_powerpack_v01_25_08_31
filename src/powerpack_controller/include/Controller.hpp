@@ -104,6 +104,10 @@ public:
     float pos_ku_micro{1.0f}, pos_ku_macro{1.0f}, pos_ku_atm{1.0f};
     float neg_ku_micro{1.0f}, neg_ku_macro{1.0f}, neg_ku_atm{1.0f};
 
+    // [수정됨] I 게인 파라미터 추가
+    float pos_ki_micro{0.0f}, pos_ki_macro{0.0f}, pos_ki_atm{0.0f};
+    float neg_ki_micro{0.0f}, neg_ki_macro{0.0f}, neg_ki_atm{0.0f};
+
     // reference (updated at runtime via TCP; default 0)
     float ref_value{0.0f};
 
@@ -141,7 +145,7 @@ public:
   // set constant A,B across horizon
   void set_AB_constant(float A_scalar, const Eigen::RowVector3f& B_row);
 
-  // solve -> returns first control (3 channels) mapped to [0..1023]
+  // [수정됨] solve 함수는 내부 상태(적분항)를 변경하므로 const가 아니어야 함
   void solve(const SensorSnapshot& s, float dt_ms, std::array<uint16_t, MPC_OUT_DIM>& out3);
 
   const Config& cfg() const { return cfg_; }
@@ -155,7 +159,10 @@ public:
 private:
   // Helpers
   float read_current_pressure(const SensorSnapshot& s) const;
-  std::array<float,3> compute_input_reference(float P_now, float P_micro, float P_macro) const;
+  
+  // [수정됨] u_ref 계산 시 내부 상태(적분항)를 변경하므로 const가 아니어야 함
+  std::array<float,3> compute_input_reference(float P_now, float P_micro, float P_macro);
+  
   void build_mpc_qp(const std::vector<float>& A_seq,
                     const std::vector<Eigen::RowVector3f>& B_seq,
                     float P_now,
@@ -182,6 +189,9 @@ private:
 
   // scratch
   std::array<float,3> last_u3_{0,0,0};
+  
+  // [수정됨] 오차 적분항을 저장할 상태 변수 추가
+  float error_integral_{0.0f};
 };
 
 // ================================
@@ -198,11 +208,9 @@ struct SensorCalib {
 
   inline double kpa_atm() const { return atm_offset; }
 
-  // [수정됨] 모든 kpa 변환 함수가 대기압을 더해 '절대압력'을 반환하도록 변경
   inline double kpa_b0(int idx, uint16_t raw) const {
     if (idx < 0 || idx >= (int)b0.size()) return this->kpa_atm();
     const auto& c = b0[(size_t)idx];
-    // (게이지압력) + (대기압) = 절대압력
     return (double(raw) - c.offset) * c.gain + this->kpa_atm();
   }
   inline double kpa_b1(int idx, uint16_t raw) const {
@@ -219,16 +227,14 @@ struct SensorCalib {
 
 // ================================
 // Lightweight TCP server (inline)
-// Receives 12 integers per line -> kPa*100, scales by 0.01
-// Order: pos1..pos6, neg1..neg6 -> maps to MPC gid 0..5,6..11
 // ================================
 struct RefTcpServer {
   struct Config {
     bool        enable{false};
-    std::string bind_address{"0.0.0.0"}; // <- 추가: 바인드 IP (기본: 모든 인터페이스)
-    int         port{15000};             // 포트
-    int         expect_n{MPC_TOTAL};     // 기대 개수(12)
-    double      scale{0.01};             // 입력이 압력*100이므로 0.01 곱해 kPa로
+    std::string bind_address{"0.0.0.0"};
+    int         port{15000};
+    int         expect_n{MPC_TOTAL};
+    double      scale{0.01};
   };
 
   using Callback = std::function<void(const std::array<double, MPC_TOTAL>&)>;
@@ -291,7 +297,6 @@ private:
   rclcpp::Publisher<std_msgs::msg::UInt16MultiArray>::SharedPtr pub_b2_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_mpc_refs_;
 
-  // [수정됨] 보정된 kPa 값을 발행할 퍼블리셔 추가
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_kpa_b0_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_kpa_b1_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_kpa_b2_;
@@ -345,12 +350,19 @@ private:
     double neg_ku_micro{3.0};
     double neg_ku_macro{3.0};
     double neg_ku_atm{6.0};
+    // [수정됨] I 게인 파라미터를 YAML에서 읽기 위한 변수 추가
+    double pos_ki_micro{0.0};
+    double pos_ki_macro{0.0};
+    double pos_ki_atm{0.0};
+    double neg_ki_micro{0.0};
+    double neg_ki_macro{0.0};
+    double neg_ki_atm{0.0};
   } mpc_;
 
   std::array<double,3> vol_pos_ml_{100.0,100.0,100.0};
   std::array<double,3> vol_neg_ml_{100.0,100.0,100.0};
 
-  bool sys_sensor_print_{true};
+  bool sys_sensor_print_{true}; 
   bool sys_reference_print_{true};
   bool sys_pwm_print_{true};
   bool sys_valve_operate_{false};

@@ -8,13 +8,13 @@ pp_controller:
     Sensor_calibration:
       atm_offset: 101.325
       b0:
-        "0": { offset: 868.0,  gain: 0.43795 }
-        "1": { offset: 856.0,  gain: 0.43795 }
-        "2": { offset: 865.0,  gain: 0.43795 }
-        "3": { offset: 857.0,  gain: 0.43795 }
+        "0": { offset: 868.0,  gain: 0.3042 }
+        "1": { offset: 856.0,  gain: 0.3042 }
+        "2": { offset: 865.0,  gain: 0.3042 }
+        "3": { offset: 857.0,  gain: 0.3042 }
       b1:
-        "0": { offset: 832.0,  gain: 0.43795   }
-        "1": { offset: 856.0,  gain: 0.43795 }
+        "0": { offset: 832.0,  gain: 0.3042 }
+        "1": { offset: 856.0,  gain: 0.3042 }
         "2": { offset: 448.0,  gain: -0.002635 }
         "3": { offset: 458.0,  gain: -0.002635 }
       b2:
@@ -67,12 +67,21 @@ pp_controller:
       Ts: 0.01
       Q_values: 20.0
       R_values: 1.0
-      pos_ku_micro: 2.0
-      pos_ku_macro: 2.0
-      pos_ku_atm: 3.0
+      pos_ku_micro: 0.5
+      pos_ku_macro: 0.5
+      pos_ku_atm: 0.5
       neg_ku_micro: 3.0
       neg_ku_macro: 3.0
       neg_ku_atm: 6.0
+
+      # --- 새로 추가할 I 게인 (ki) ---
+  # 처음에는 작은 값으로 시작하여 튜닝하는 것을 권장합니다.
+      pos_ki_micro: 0.7
+      pos_ki_macro: 0.7
+      pos_ki_atm: 0.7
+      neg_ki_micro: 0.15
+      neg_ki_macro: 0.15
+      neg_ki_atm: 0.3
 
     channel_volume:
       pos1: 100
