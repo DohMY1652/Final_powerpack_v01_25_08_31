@@ -212,6 +212,7 @@ float AcadosMpc::read_current_pressure(const SensorSnapshot&) const {
   return current_P_now_;
 }
 
+// [수정됨] Macro 밸브 사용량 조절 로직 추가
 std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micro, float P_macro) {
   const float Pref = cfg_.ref_value;
   float err = Pref - P_now;
@@ -231,25 +232,27 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
 
   // 3. PI 제어 출력 계산
   if (cfg_.is_positive) { // 양압 챔버
-    if (err > 0.f) { // 가압 시
+    if (err > 0.f) { // 가압 시 (압력 높여야 함)
       u_mi = ku_mi * err + ki_mi * error_integral_;
-      u_ma = ku_ma * err + ki_ma * error_integral_;
+      // [수정됨] Macro 밸브 게인 승수 적용
+      u_ma = (ku_ma * err + ki_ma * error_integral_) * cfg_.macro_gain_multiplier;
       u_at = 0.f;
     }
-    else { // 감압 시
+    else { // 감압 시 (압력 낮춰야 함)
       u_mi = 0.f;
       u_ma = 0.f;
       u_at = ku_at * (-err) + ki_at * (-error_integral_);
     }
   } else { // 음압 챔버
-    if (err < 0.f) { // 대기로 감압 시
+    // [수정됨] 음압 채널 제어 로직 수정
+    if (err > 0.f) { // 압력을 높여야 할 때 (대기압 쪽으로)
       u_mi = 0.f;
       u_ma = 0.f;
-      u_at = ku_at * (-err) + ki_at * (-error_integral_);
+      u_at = ku_at * err + ki_at * error_integral_; // err이 양수이므로 그대로 사용
     }
-    else { // 진공 펌프로 흡입 시
-      u_mi = ku_mi * err + ki_mi * error_integral_;
-      u_ma = ku_ma * err + ki_ma * error_integral_;
+    else { // 압력을 낮춰야 할 때 (진공 쪽으로)
+      u_mi = ku_mi * (-err) + ki_mi * (-error_integral_); // err이 음수이므로 부호 반전
+      u_ma = (ku_ma * (-err) + ki_ma * (-error_integral_)) * cfg_.macro_gain_multiplier;
       u_at = 0.f;
     }
   }
@@ -265,7 +268,7 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
       error_integral_ = (u_mi_clamped - ku_mi * err) / ki_mi;
   }
   if (ki_ma != 0.f && u_ma != u_ma_clamped) {
-      error_integral_ = (u_ma_clamped - ku_ma * err) / ki_ma;
+      error_integral_ = (u_ma_clamped - (ku_ma * err * cfg_.macro_gain_multiplier) ) / ki_ma;
   }
   if (ki_at != 0.f && u_at != u_at_clamped) {
       error_integral_ = -( (u_at_clamped - ku_at * (-err)) / ki_at );
@@ -330,6 +333,7 @@ std::array<float,3> AcadosMpc::solve_qp_first_step(const Eigen::MatrixXf& P,
   return du3;
 }
 
+// [수정됨] 상호 배제 로직 추가
 void AcadosMpc::solve(const SensorSnapshot& s, float /*dt_ms*/,
                       std::array<uint16_t, MPC_OUT_DIM>& out3)
 {
@@ -366,6 +370,26 @@ void AcadosMpc::solve(const SensorSnapshot& s, float /*dt_ms*/,
   out3[0] = static_cast<uint16_t>( std::round(u0[0] * 10.23f) ); // micro
   out3[1] = static_cast<uint16_t>( std::round(u0[2] * 10.23f) ); // atm
   out3[2] = static_cast<uint16_t>( std::round(u0[1] * 10.23f) ); // macro
+
+  // [추가됨] 최종 출력단에서 상호 배제 로직 강제 적용
+  // 작은 노이즈에도 반응하지 않도록 약간의 데드존(0.01kPa) 설정
+  const float err = cfg_.ref_value - P_now;
+  if (cfg_.is_positive) { // 양압
+      if (err > 0.01f) { // 가압이 필요할 때
+          out3[1] = 0; // ATM 밸브를 강제로 닫음
+      } else if (err < -0.01f) { // 감압이 필요할 때
+          out3[0] = 0; // Micro 밸브를 강제로 닫음
+          out3[2] = 0; // Macro 밸브를 강제로 닫음
+      }
+  } else { // 음압
+      // [수정됨] 음압 채널 상호 배제 로직 수정
+      if (err > 0.01f) { // 압력을 높여야 할 때 (대기압 방향)
+          out3[0] = 0; // Micro 밸브를 강제로 닫음
+          out3[2] = 0; // Macro 밸브를 강제로 닫음
+      } else if (err < -0.01f) { // 압력을 낮춰야 할 때 (진공 방향)
+          out3[1] = 0; // ATM 밸브를 강제로 닫음
+      }
+  }
 }
 
 // ================================
@@ -540,6 +564,9 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   mpc_.neg_ki_micro = get_param_or<double>(this, "MPC_parameters.neg_ki_micro", 0.0);
   mpc_.neg_ki_macro = get_param_or<double>(this, "MPC_parameters.neg_ki_macro", 0.0);
   mpc_.neg_ki_atm   = get_param_or<double>(this, "MPC_parameters.neg_ki_atm",   0.0);
+  // [추가됨] Macro 밸브 사용량 조절 파라미터 로드
+  mpc_.macro_gain_multiplier = get_param_or<double>(this, "MPC_parameters.macro_gain_multiplier", 1.0);
+
 
   auto get_ml = [&](const char* key, double def_ml){
     return get_param_or<double>(this, std::string("channel_volume.")+key, def_ml);
@@ -584,6 +611,8 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   
   log_channel_id_ = this->declare_parameter<int>("log_channel_id", -1);
 
+  mpc_ref_kpa_.fill(101.325);
+
   if (ref_tcp_cfg_.enable) {
     ref_server_ = std::make_unique<RefTcpServer>(
       ref_tcp_cfg_,
@@ -621,7 +650,7 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
       log_file_ << "tick,reference_kpa,sensed_kpa\n";
     } else {
       RCLCPP_ERROR(get_logger(), "Failed to open log file mpc_log.csv");
-      log_channel_id_ = -1; 
+      log_channel_id_ = -1;
     }
   }
 
@@ -693,12 +722,15 @@ void Controller::build_mpcs() {
       cfg.neg_ki_macro  = (float)mpc_.neg_ki_macro;
       cfg.neg_ki_atm    = (float)mpc_.neg_ki_atm;
 
-      cfg.ref_value = 0.0f;
-      cfg.du_min = -30.f; cfg.du_max = +30.f;
+      cfg.ref_value = 101.325f;
+      cfg.du_min = -50.f; cfg.du_max = +50.f;
       cfg.u_abs_min = 0.f; cfg.u_abs_max = 100.f;
 
       if (cfg.is_positive) cfg.volume_m3 = ml_to_m3(vol_pos_ml_[gid % 3]);
       else                 cfg.volume_m3 = ml_to_m3(vol_neg_ml_[gid % 3]);
+      
+      // [추가됨] MPC 설정에 macro_gain_multiplier 전달
+      cfg.macro_gain_multiplier = (float)mpc_.macro_gain_multiplier;
 
       mpcs_.emplace_back(std::make_unique<AcadosMpc>(cfg));
   }

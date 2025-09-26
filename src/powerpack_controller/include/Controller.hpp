@@ -103,6 +103,8 @@ public:
     float u_abs_min{0.0f};
     float u_abs_max{100.0f};
     float volume_m3{1.0e-5f};
+    // [추가됨] Macro 밸브 사용량 조절을 위한 게인 승수
+    float macro_gain_multiplier{1.0f};
   };
 
   explicit AcadosMpc(const Config& cfg);
@@ -227,6 +229,8 @@ private:
     double neg_ku_micro{3.0}, neg_ku_macro{3.0}, neg_ku_atm{6.0};
     double pos_ki_micro{0.0}, pos_ki_macro{0.0}, pos_ki_atm{0.0};
     double neg_ki_micro{0.0}, neg_ki_macro{0.0}, neg_ki_atm{0.0};
+    // [추가됨] Macro 밸브 게인 조절 파라미터
+    double macro_gain_multiplier{1.0};
   } mpc_;
   std::array<double,3> vol_pos_ml_{100.0,100.0,100.0};
   std::array<double,3> vol_neg_ml_{100.0,100.0,100.0};
