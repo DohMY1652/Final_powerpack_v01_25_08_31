@@ -15,6 +15,7 @@
 #include <functional>
 #include <memory>
 #include <atomic>
+#include <fstream> // [수정됨] 파일 출력을 위해 추가
 
 // ================================
 // Fixed sizes for this project
@@ -78,119 +79,61 @@ class AcadosMpc {
 public:
   struct Config {
     // Identification / mapping
-    int board_index{0};    // 0,1,2
-    int global_id{0};      // 0..11 -> phase = global_id % 4
-    int pwm_offset{0};     // 0, 3, 6, 9
+    int board_index{0};
+    int global_id{0};
+    int pwm_offset{0};
     int reference_channel{0};
-
-    // Which sensors to use (up to 4). Use -1 for "unused".
     std::array<int,4> sensor_idx{0,1,2,3};
-
-    // MPC / model params
-    int   NP{10};          // prediction horizon
-    int   n_x{1};          // scalar pressure state
-    int   n_u{3};          // 3 valves per MPC
-    float Ts{0.004f};      // 4 ms step (250 Hz)
-
+    int   NP{10};
+    int   n_x{1};
+    int   n_u{3};
+    float Ts{0.004f};
     float Q_value{1.0f};
     float R_value{1.0f};
-
-    // linearized scalar A and 1x3 B for this MPC
     float A_lin{1.0f};
     std::array<float,3> B_lin{1.0f, 0.0f, 0.0f};
-
-    // sign-dependent proportional mapping (your pos/neg ku terms)
     bool  is_positive{true};
     float pos_ku_micro{1.0f}, pos_ku_macro{1.0f}, pos_ku_atm{1.0f};
     float neg_ku_micro{1.0f}, neg_ku_macro{1.0f}, neg_ku_atm{1.0f};
-
-    // [수정됨] I 게인 파라미터 추가
     float pos_ki_micro{0.0f}, pos_ki_macro{0.0f}, pos_ki_atm{0.0f};
     float neg_ki_micro{0.0f}, neg_ki_macro{0.0f}, neg_ki_atm{0.0f};
-
-    // reference (updated at runtime via TCP; default 0)
     float ref_value{0.0f};
-
-    // input bounds around input_reference (delta u bounds)
     float du_min{-100.0f};
     float du_max{+100.0f};
-
-    // absolute input bound after adding reference
     float u_abs_min{0.0f};
     float u_abs_max{100.0f};
-
-    // chamber volume from YAML channel_volume (m^3)
     float volume_m3{1.0e-5f};
   };
 
   explicit AcadosMpc(const Config& cfg);
-
-  // optional: inject your QP solver instance (matches set_data/solve/get_raw_result API)
   void set_qp_solver(std::shared_ptr<QP> qp);
-
-  // set reference (kPa) externally each tick
-  inline void set_ref_value(float ref_kpa) {
-    cfg_.ref_value = ref_kpa;
-  }
-
-  // Linearize dynamics each tick from sensors, x_ref, u_ref
-  void update_linearization(const SensorSnapshot& s,
-                            float x_ref,
-                            const Eigen::RowVector3f& u_ref);
-
-  // set A,B sequences externally (optional)
-  void set_AB_sequences(const std::vector<float>& A_seq,
-                        const std::vector<Eigen::RowVector3f>& B_seq);
-
-  // set constant A,B across horizon
+  inline void set_ref_value(float ref_kpa) { cfg_.ref_value = ref_kpa; }
+  void update_linearization(const SensorSnapshot& s, float x_ref, const Eigen::RowVector3f& u_ref);
+  void set_AB_sequences(const std::vector<float>& A_seq, const std::vector<Eigen::RowVector3f>& B_seq);
   void set_AB_constant(float A_scalar, const Eigen::RowVector3f& B_row);
-
-  // [수정됨] solve 함수는 내부 상태(적분항)를 변경하므로 const가 아니어야 함
   void solve(const SensorSnapshot& s, float dt_ms, std::array<uint16_t, MPC_OUT_DIM>& out3);
-
   const Config& cfg() const { return cfg_; }
 
-  // Controller가 채워주는 현재 압력(kPa). 단순 멤버로 둠.
   float current_P_now_   = 101.325f;
   float current_P_micro_ = 101.325f;
   float current_P_macro_ = 101.325f;
   float current_P_atm_   = 101.325f;
 
 private:
-  // Helpers
   float read_current_pressure(const SensorSnapshot& s) const;
-  
-  // [수정됨] u_ref 계산 시 내부 상태(적분항)를 변경하므로 const가 아니어야 함
   std::array<float,3> compute_input_reference(float P_now, float P_micro, float P_macro);
-  
-  void build_mpc_qp(const std::vector<float>& A_seq,
-                    const std::vector<Eigen::RowVector3f>& B_seq,
-                    float P_now,
-                    const std::vector<float>& P_ref,
-                    Eigen::MatrixXf& P, Eigen::VectorXf& q,
-                    Eigen::MatrixXf& A_con, Eigen::VectorXf& LL, Eigen::VectorXf& UL);
-  std::array<float,3> solve_qp_first_step(const Eigen::MatrixXf& P,
-                                          const Eigen::VectorXf& q,
-                                          const Eigen::MatrixXf& A_con,
-                                          const Eigen::VectorXf& LL,
-                                          const Eigen::VectorXf& UL);
+  void build_mpc_qp(const std::vector<float>& A_seq, const std::vector<Eigen::RowVector3f>& B_seq, float P_now, const std::vector<float>& P_ref, Eigen::MatrixXf& P, Eigen::VectorXf& q, Eigen::MatrixXf& A_con, Eigen::VectorXf& LL, Eigen::VectorXf& UL);
+  std::array<float,3> solve_qp_first_step(const Eigen::MatrixXf& P, const Eigen::VectorXf& q, const Eigen::MatrixXf& A_con, const Eigen::VectorXf& LL, const Eigen::VectorXf& UL);
 
 private:
   Config cfg_;
-  std::shared_ptr<QP> qp_; // optional external solver
-
-  // Pre-alloc buffers to avoid per-tick allocation
-  std::vector<float> P_ref_;     // size NP
-  std::vector<float> A_seq_;     // size NP (scalar A per step)
-  std::vector<Eigen::RowVector3f> B_seq_; // size NP (B per step)
-
+  std::shared_ptr<QP> qp_;
+  std::vector<float> P_ref_;
+  std::vector<float> A_seq_;
+  std::vector<Eigen::RowVector3f> B_seq_;
   Eigen::MatrixXf Q_, R_, Pmat_, Acon_;
   Eigen::VectorXf qvec_, LL_, UL_;
-
-  // scratch
   std::array<float,3> last_u3_{0,0,0};
-  
-  // [수정됨] 오차 적분항을 저장할 상태 변수 추가
   float error_integral_{0.0f};
 };
 
@@ -199,51 +142,26 @@ private:
 // ================================
 struct SensorCalib {
   struct Channel { double offset{1.0}; double gain{250.0}; };
-
   double atm_offset{101.325};
-
-  std::array<Channel, ANALOG_B0> b0{ /* ... */ };
-  std::array<Channel, ANALOG_B1> b1{ /* ... */ };
-  std::array<Channel, ANALOG_B2> b2{ /* ... */ };
-
+  std::array<Channel, ANALOG_B0> b0{};
+  std::array<Channel, ANALOG_B1> b1{};
+  std::array<Channel, ANALOG_B2> b2{};
   inline double kpa_atm() const { return atm_offset; }
-
-  inline double kpa_b0(int idx, uint16_t raw) const {
-    if (idx < 0 || idx >= (int)b0.size()) return this->kpa_atm();
-    const auto& c = b0[(size_t)idx];
-    return (double(raw) - c.offset) * c.gain + this->kpa_atm();
-  }
-  inline double kpa_b1(int idx, uint16_t raw) const {
-    if (idx < 0 || idx >= (int)b1.size()) return this->kpa_atm();
-    const auto& c = b1[(size_t)idx];
-    return (double(raw) - c.offset) * c.gain + this->kpa_atm();
-  }
-  inline double kpa_b2(int idx, uint16_t raw) const {
-    if (idx < 0 || idx >= (int)b2.size()) return this->kpa_atm();
-    const auto& c = b2[(size_t)idx];
-    return (double(raw) - c.offset) * c.gain + this->kpa_atm();
-  }
+  inline double kpa_b0(int idx, uint16_t raw) const { if (idx < 0 || idx >= (int)b0.size()) return this->kpa_atm(); const auto& c = b0[(size_t)idx]; return (double(raw) - c.offset) * c.gain + this->kpa_atm(); }
+  inline double kpa_b1(int idx, uint16_t raw) const { if (idx < 0 || idx >= (int)b1.size()) return this->kpa_atm(); const auto& c = b1[(size_t)idx]; return (double(raw) - c.offset) * c.gain + this->kpa_atm(); }
+  inline double kpa_b2(int idx, uint16_t raw) const { if (idx < 0 || idx >= (int)b2.size()) return this->kpa_atm(); const auto& c = b2[(size_t)idx]; return (double(raw) - c.offset) * c.gain + this->kpa_atm(); }
 };
 
 // ================================
 // Lightweight TCP server (inline)
 // ================================
 struct RefTcpServer {
-  struct Config {
-    bool        enable{false};
-    std::string bind_address{"0.0.0.0"};
-    int         port{15000};
-    int         expect_n{MPC_TOTAL};
-    double      scale{0.01};
-  };
-
+  struct Config { bool enable{false}; std::string bind_address{"0.0.0.0"}; int port{15000}; int expect_n{MPC_TOTAL}; double scale{0.01}; };
   using Callback = std::function<void(const std::array<double, MPC_TOTAL>&)>;
   explicit RefTcpServer(const Config& cfg, Callback cb);
   ~RefTcpServer();
-
 private:
   void run_();
-
   Config   cfg_;
   Callback cb_;
   std::thread th_;
@@ -261,131 +179,78 @@ private:
 class Controller : public rclcpp::Node {
 public:
   explicit Controller(const rclcpp::NodeOptions& opts = rclcpp::NodeOptions());
-  ~Controller() override = default;
+  ~Controller() override; // [수정됨] 소멸자 구현을 위해 default 제거
 
 private:
-  // ROS callbacks
   void on_sensor_b0(const std_msgs::msg::UInt16MultiArray::SharedPtr msg);
   void on_sensor_b1(const std_msgs::msg::UInt16MultiArray::SharedPtr msg);
   void on_sensor_b2(const std_msgs::msg::UInt16MultiArray::SharedPtr msg);
   void on_timer();
-
-  // Build 12 MPC modules (4 per board)
   void build_mpcs();
-
-  // 1 kHz inner loop (LQR/PID/Condition over ZOH outputs)
   void inner_loop_1khz(const SensorSnapshot& s, float dt_ms);
-
-  inline uint16_t clamp_pwm(int v) const {
-    return static_cast<uint16_t>( std::min(std::max(v, PWM_CLAMP_MIN), PWM_CLAMP_MAX) );
-  }
+  inline uint16_t clamp_pwm(int v) const { return static_cast<uint16_t>( std::min(std::max(v, PWM_CLAMP_MIN), PWM_CLAMP_MAX) ); }
   void publish_cmds();
 
 private:
-  // timing / affinity
   int period_ms_{1000 / PWM_RATE_HZ};
   bool enable_thread_pinning_{true};
-  std::vector<int64_t> cpu_pins_param_; // e.g. [0,1,2,3]
-
-  // ROS I/O
+  std::vector<int64_t> cpu_pins_param_;
   rclcpp::TimerBase::SharedPtr timer_;
-  rclcpp::Subscription<std_msgs::msg::UInt16MultiArray>::SharedPtr sub_b0_;
-  rclcpp::Subscription<std_msgs::msg::UInt16MultiArray>::SharedPtr sub_b1_;
-  rclcpp::Subscription<std_msgs::msg::UInt16MultiArray>::SharedPtr sub_b2_;
-  rclcpp::Publisher<std_msgs::msg::UInt16MultiArray>::SharedPtr pub_b0_;
-  rclcpp::Publisher<std_msgs::msg::UInt16MultiArray>::SharedPtr pub_b1_;
-  rclcpp::Publisher<std_msgs::msg::UInt16MultiArray>::SharedPtr pub_b2_;
+  rclcpp::Subscription<std_msgs::msg::UInt16MultiArray>::SharedPtr sub_b0_, sub_b1_, sub_b2_;
+  rclcpp::Publisher<std_msgs::msg::UInt16MultiArray>::SharedPtr pub_b0_, pub_b1_, pub_b2_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_mpc_refs_;
-
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_kpa_b0_;
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_kpa_b1_;
-  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_kpa_b2_;
-
-  // Thread pool
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_kpa_b0_, pub_kpa_b1_, pub_kpa_b2_;
   std::unique_ptr<ThreadPool> pool_;
-
-  // Latest sensors
   std::mutex sensors_mtx_;
   std::array<uint16_t, ANALOG_B0> sensors_b0_{};
   std::array<uint16_t, ANALOG_B1> sensors_b1_{};
   std::array<uint16_t, ANALOG_B2> sensors_b2_{};
-
-  // ZOH-held MPC outputs
   std::array<uint16_t, PWM_MAX_B0> zoh_b0_{};
   std::array<uint16_t, PWM_MAX_B1> zoh_b1_{};
   std::array<uint16_t, PWM_MAX_B2> zoh_b2_{};
-
-  // 1 kHz inner loop corrections
   std::array<int, PWM_MAX_B0> inner_b0_{};
   std::array<int, PWM_MAX_B1> inner_b1_{};
   std::array<int, PWM_MAX_B2> inner_b2_{};
-
-  // Final commands
   std::array<uint16_t, PWM_MAX_B0> cmds_b0_{};
   std::array<uint16_t, PWM_MAX_B1> cmds_b1_{};
   std::array<uint16_t, PWM_MAX_B2> cmds_b2_{};
-
-  // MPC modules
   std::vector<std::unique_ptr<AcadosMpc>> mpcs_;
   uint64_t tick_{0};
-
-  // ===== YAML에서 주입될 런타임 파라미터 =====
   SensorCalib sensor_;
-
   int  ref_freq_hz_{1000};
   int  pwm_freq_hz_{1000};
-  int  pid_pos_index_{18}; // (unused legacy; kept for compatibility)
-  int  pid_neg_index_{19}; // (unused legacy; kept for compatibility)
-
+  int  pid_pos_index_{18};
+  int  pid_neg_index_{19};
   struct MpcYaml {
-    int    NP{5};
-    int    n_x{1};
-    int    n_u{3};
-    double Ts{0.01};
-    double Q_value{10.0};
-    double R_value{1.0};
-    double pos_ku_micro{0.5};
-    double pos_ku_macro{0.5};
-    double pos_ku_atm{2.0};
-    double neg_ku_micro{3.0};
-    double neg_ku_macro{3.0};
-    double neg_ku_atm{6.0};
-    // [수정됨] I 게인 파라미터를 YAML에서 읽기 위한 변수 추가
-    double pos_ki_micro{0.0};
-    double pos_ki_macro{0.0};
-    double pos_ki_atm{0.0};
-    double neg_ki_micro{0.0};
-    double neg_ki_macro{0.0};
-    double neg_ki_atm{0.0};
+    int    NP{5}; int n_x{1}; int n_u{3}; double Ts{0.01}; double Q_value{10.0}; double R_value{1.0};
+    double pos_ku_micro{0.5}, pos_ku_macro{0.5}, pos_ku_atm{2.0};
+    double neg_ku_micro{3.0}, neg_ku_macro{3.0}, neg_ku_atm{6.0};
+    double pos_ki_micro{0.0}, pos_ki_macro{0.0}, pos_ki_atm{0.0};
+    double neg_ki_micro{0.0}, neg_ki_macro{0.0}, neg_ki_atm{0.0};
   } mpc_;
-
   std::array<double,3> vol_pos_ml_{100.0,100.0,100.0};
   std::array<double,3> vol_neg_ml_{100.0,100.0,100.0};
-
   bool sys_sensor_print_{true}; 
   bool sys_reference_print_{true};
   bool sys_pwm_print_{true};
   bool sys_valve_operate_{false};
-
-  // === Reference TCP ===
   RefTcpServer::Config ref_tcp_cfg_{};
   std::unique_ptr<RefTcpServer> ref_server_;
   std::mutex mpc_ref_mtx_;
-  std::array<double, MPC_TOTAL> mpc_ref_kpa_{}; // gid 0..11
-
-  // === Line PID (board 2, PWM[12] = 13th) ===
+  std::array<double, MPC_TOTAL> mpc_ref_kpa_{};
   struct PidGains { double kp{0.5}, ki{0.0}, kd{0.0}, ref{150.0}; };
   struct PidState { double integ{0.0}; double prev_err{0.0}; bool has_prev{false}; };
   PidGains pid_pos_;
   PidState pid_pos_state_;
   double pid_out_min_{0.0}, pid_out_max_{100.0};
-  int    pid_pos_pwm_index_{12}; // b2[12] = 13th
-
+  int    pid_pos_pwm_index_{12};
   PidGains pid_neg_;
   PidState pid_neg_state_;
-  int      pid_neg_pwm_index_{13}; //b2[13] = 14th
-
-  // === Macro ON/OFF (board 2, PWM[13] = 14th) ===
+  int      pid_neg_pwm_index_{13};
   double macro_switch_threshold_kpa_{120.0};
-  int    macro_switch_pwm_index_{14}; // b2[14] = 15th
+  int    macro_switch_pwm_index_{14};
+
+  // [수정됨] 데이터 로깅을 위한 멤버 변수 추가
+  int log_channel_id_{-1};      // 로깅할 채널의 global_id, -1이면 비활성화
+  std::ofstream log_file_;      // 로그 파일 스트림
 };

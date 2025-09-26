@@ -1,7 +1,7 @@
 # [MODIFIED] Added 'pp_controller:' as the top-level key and indented all content.
 pp_controller:
   ros__parameters:
-
+    log_channel_id: 2
     active_mpc_channels: [0,1,2,3,4,5,6,7,8,9,10,11]
 
     # === per-channel calibration (map-based) ===
@@ -15,15 +15,15 @@ pp_controller:
       b1:
         "0": { offset: 832.0,  gain: 0.3042 }
         "1": { offset: 856.0,  gain: 0.3042 }
-        "2": { offset: 448.0,  gain: -0.002635 }
-        "3": { offset: 458.0,  gain: -0.002635 }
+        "2": { offset: 448.0,  gain: -0.0604925 }
+        "3": { offset: 458.0,  gain: -0.0604925 }
       b2:
-        "0": { offset: 435.0,  gain: -0.002635 }
-        "1": { offset: 433.0,  gain: -0.002635 }
-        "2": { offset: 434.0,  gain: -0.002635 }
-        "3": { offset: 434.0,  gain: -0.002635 }
+        "0": { offset: 435.0,  gain: -0.0604925 }
+        "1": { offset: 433.0,  gain: -0.0604925 }
+        "2": { offset: 434.0,  gain: -0.0604925 }
+        "3": { offset: 434.0,  gain: -0.0604925 }
         "4": { offset: 829.0,  gain: 0.3066 }   # pos line (핀20)
-        "5": { offset: 817.0,  gain: -0.0312 }  # neg line (핀21)
+        "5": { offset: 817.0,  gain: -0.0309577 }  # neg line (핀21)
         "6": { offset: 487.0,  gain: 0.640 }   # macro line (핀22)
 
     RefTcp:
@@ -76,9 +76,9 @@ pp_controller:
 
       # --- 새로 추가할 I 게인 (ki) ---
   # 처음에는 작은 값으로 시작하여 튜닝하는 것을 권장합니다.
-      pos_ki_micro: 0.7
-      pos_ki_macro: 0.7
-      pos_ki_atm: 0.7
+      pos_ki_micro: 1.0
+      pos_ki_macro: 1.0
+      pos_ki_atm: 1.0
       neg_ki_micro: 0.15
       neg_ki_macro: 0.15
       neg_ki_atm: 0.3

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <set>
+#include <fstream> // [수정됨] 파일 출력을 위해 추가
 
 #ifdef __linux__
   #include <pthread.h>
@@ -211,15 +212,11 @@ float AcadosMpc::read_current_pressure(const SensorSnapshot&) const {
   return current_P_now_;
 }
 
-// ==============================================================================
-// [수정됨] u_ref 계산 로직에 I 게인을 추가하고 안티 와인드업을 구현
-// ==============================================================================
 std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micro, float P_macro) {
   const float Pref = cfg_.ref_value;
   float err = Pref - P_now;
 
   // 1. 오차 적분
-  // MPC 스텝 시간(Ts)을 곱하여 적분항을 업데이트
   error_integral_ += err * cfg_.Ts;
 
   // 2. P, I 게인 가져오기
@@ -242,7 +239,6 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
     else { // 감압 시
       u_mi = 0.f;
       u_ma = 0.f;
-      // 대기압 밸브의 오차는 (P_now - Pref) = -err 이므로, 적분항도 부호를 뒤집어 사용
       u_at = ku_at * (-err) + ki_at * (-error_integral_);
     }
   } else { // 음압 챔버
@@ -265,8 +261,6 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
   float u_at_clamped = std::clamp(u_at, 0.f, 100.f);
 
   // 5. 안티 와인드업 (Anti-windup)
-  // 만약 출력이 0~100 범위를 벗어나 잘렸고(clamping),
-  // 오차가 계속해서 적분항을 잘못된 방향으로 키우고 있다면, 적분항을 되돌려놓는다.
   if (ki_mi != 0.f && u_mi != u_mi_clamped) {
       error_integral_ = (u_mi_clamped - ku_mi * err) / ki_mi;
   }
@@ -279,7 +273,6 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
 
   return {u_mi_clamped, u_ma_clamped, u_at_clamped};
 }
-
 
 void AcadosMpc::build_mpc_qp(const std::vector<float>& A_seq,
                              const std::vector<Eigen::RowVector3f>& B_seq,
@@ -541,8 +534,6 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   mpc_.neg_ku_micro = get_param_or<double>(this, "MPC_parameters.neg_ku_micro", 3.0);
   mpc_.neg_ku_macro = get_param_or<double>(this, "MPC_parameters.neg_ku_macro", 3.0);
   mpc_.neg_ku_atm   = get_param_or<double>(this, "MPC_parameters.neg_ku_atm",   6.0);
-
-  // [수정됨] YAML 파일에서 I 게인 파라미터 로드
   mpc_.pos_ki_micro = get_param_or<double>(this, "MPC_parameters.pos_ki_micro", 0.0);
   mpc_.pos_ki_macro = get_param_or<double>(this, "MPC_parameters.pos_ki_macro", 0.0);
   mpc_.pos_ki_atm   = get_param_or<double>(this, "MPC_parameters.pos_ki_atm",   0.0);
@@ -590,6 +581,8 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   ref_tcp_cfg_.port         = get_param_or<int>(this,   "RefTcp.port",         15000);
   ref_tcp_cfg_.expect_n     = get_param_or<int>(this,   "RefTcp.expect_n",     MPC_TOTAL);
   ref_tcp_cfg_.scale        = get_param_or<double>(this,"RefTcp.scale",        0.01);
+  
+  log_channel_id_ = this->declare_parameter<int>("log_channel_id", -1);
 
   if (ref_tcp_cfg_.enable) {
     ref_server_ = std::make_unique<RefTcpServer>(
@@ -621,6 +614,17 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
 
   build_mpcs();
 
+  if (log_channel_id_ >= 0 && log_channel_id_ < MPC_TOTAL) {
+    log_file_.open("mpc_log.csv", std::ios::out | std::ios::trunc);
+    if (log_file_.is_open()) {
+      RCLCPP_INFO(get_logger(), "Logging data for MPC channel %d to mpc_log.csv", log_channel_id_);
+      log_file_ << "tick,reference_kpa,sensed_kpa\n";
+    } else {
+      RCLCPP_ERROR(get_logger(), "Failed to open log file mpc_log.csv");
+      log_channel_id_ = -1; 
+    }
+  }
+
   timer_ = create_wall_timer(std::chrono::milliseconds(period_ms_), std::bind(&Controller::on_timer, this));
 
   RCLCPP_INFO(get_logger(),
@@ -629,6 +633,14 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   ref_tcp_cfg_.port, ref_tcp_cfg_.expect_n, ref_tcp_cfg_.scale);
   
   RCLCPP_INFO(this->get_logger(), "Controller node initialization complete.");
+}
+
+Controller::~Controller()
+{
+  if (log_file_.is_open()) {
+    log_file_.close();
+    RCLCPP_INFO(get_logger(), "Log file mpc_log.csv closed.");
+  }
 }
 
 void Controller::build_mpcs() {
@@ -674,7 +686,6 @@ void Controller::build_mpcs() {
       cfg.neg_ku_macro  = (float)mpc_.neg_ku_macro;
       cfg.neg_ku_atm    = (float)mpc_.neg_ku_atm;
 
-      // [수정됨] MPC 인스턴스 생성 시 I 게인 설정
       cfg.pos_ki_micro  = (float)mpc_.pos_ki_micro;
       cfg.pos_ki_macro  = (float)mpc_.pos_ki_macro;
       cfg.pos_ki_atm    = (float)mpc_.pos_ki_atm;
@@ -698,7 +709,6 @@ void Controller::build_mpcs() {
 }
 
 
-// sensor callbacks
 void Controller::on_sensor_b0(const std_msgs::msg::UInt16MultiArray::SharedPtr m) {
   std::lock_guard<std::mutex> lk(sensors_mtx_);
   for (size_t i=0;i<ANALOG_B0 && i<m->data.size();++i) sensors_b0_[i] = m->data[i];
@@ -804,6 +814,10 @@ void Controller::on_timer() {
       float ref_kpa = 0.f;
       if (gid >= 0 && gid < MPC_TOTAL) ref_kpa = (float)ref_snapshot[(size_t)gid];
       mpc->set_ref_value(ref_kpa);
+
+      if (gid == log_channel_id_ && log_file_.is_open()) {
+        log_file_ << tick_ << "," << ref_kpa << "," << P_state_kPa << "\n";
+      }
 
       std::array<uint16_t, MPC_OUT_DIM> u3{};
       mpc->solve(snap, 4.0f, u3);
