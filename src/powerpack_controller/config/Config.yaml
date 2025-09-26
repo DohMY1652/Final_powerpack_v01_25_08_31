@@ -1,8 +1,9 @@
 # [MODIFIED] Added 'pp_controller:' as the top-level key and indented all content.
 pp_controller:
   ros__parameters:
-    log_channel_id: 2
-    active_mpc_channels: [0,1,2,3,4,5,6,7,8,9,10,11]
+    active_mpc_channels: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    sensor_filter_alpha: 0.2
+
 
     # === per-channel calibration (map-based) ===
     Sensor_calibration:
@@ -11,7 +12,7 @@ pp_controller:
         "0": { offset: 865.0,  gain: 0.3042 }
         "1": { offset: 852.0,  gain: 0.3042 }
         "2": { offset: 852.0,  gain: 0.3042 }
-        "3": { offset: 866.0,  gain: 0.3042 }
+        "3": { offset: 855.0,  gain: 0.3042 }
       b1:
         "0": { offset: 832.0,  gain: 0.3042 }
         "1": { offset: 853.0,  gain: 0.3042 }
@@ -35,8 +36,8 @@ pp_controller:
 
     LinePID:
       pos:
-        kp: 0.4
-        ki: 0.1
+        kp: 4.0
+        ki: 1.0
         kd: 0.0
         ref: 400.0
         pwm_index: 12
@@ -64,24 +65,24 @@ pp_controller:
       NP: 5
       n_x: 1
       n_u: 3
-      Ts: 0.01
+      Ts: 0.004
       Q_values: 20.0
-      R_values: 1.0
+      R_values: 0.1
       pos_ku_micro: 1.0
       pos_ku_macro: 1.0
-      pos_ku_atm: 2.0
-      neg_ku_micro: 6.0
-      neg_ku_macro: 6.0
-      neg_ku_atm: 10.0
+      pos_ku_atm: 5.0
+      neg_ku_micro: 3.0
+      neg_ku_macro: 3.0
+      neg_ku_atm: 8.0
 
       # --- 새로 추가할 I 게인 (ki) ---
   # 처음에는 작은 값으로 시작하여 튜닝하는 것을 권장합니다.
-      pos_ki_micro: 0.7
-      pos_ki_macro: 0.7
-      pos_ki_atm: 0.7
-      neg_ki_micro: 2.0
-      neg_ki_macro: 2.0
-      neg_ki_atm: 3.0
+      pos_ki_micro: 0.2
+      pos_ki_macro: 0.2
+      pos_ki_atm: 0.2
+      neg_ki_micro: 0.4
+      neg_ki_macro: 0.4
+      neg_ki_atm: 0.4
       
       # [추가됨] Macro 밸브 사용량을 줄이기 위한 게인 승수 (0.0 ~ 1.0 사이 값 권장)
       macro_gain_multiplier: 0.4

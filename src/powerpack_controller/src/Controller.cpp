@@ -212,69 +212,62 @@ float AcadosMpc::read_current_pressure(const SensorSnapshot&) const {
   return current_P_now_;
 }
 
-// [수정됨] Macro 밸브 사용량 조절 로직 추가
+// [최종 수정] 음압 채널의 I-term 부호 반전 버그를 수정한 최종 코드
 std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micro, float P_macro) {
-  const float Pref = cfg_.ref_value;
-  float err = Pref - P_now;
+    const float Pref = cfg_.ref_value;
+    float err = Pref - P_now;
 
-  // 1. 오차 적분
-  error_integral_ += err * cfg_.Ts;
+    const float ku_mi = cfg_.is_positive ? cfg_.pos_ku_micro : cfg_.neg_ku_micro;
+    const float ku_at = cfg_.is_positive ? cfg_.pos_ku_atm   : cfg_.neg_ku_atm;
+    const float ki_mi = cfg_.is_positive ? cfg_.pos_ki_micro : cfg_.neg_ki_micro;
+    const float ki_at = cfg_.is_positive ? cfg_.pos_ki_atm   : cfg_.neg_ki_atm;
 
-  // 2. P, I 게인 가져오기
-  const float ku_mi = cfg_.is_positive ? cfg_.pos_ku_micro : cfg_.neg_ku_micro;
-  const float ku_ma = cfg_.is_positive ? cfg_.pos_ku_macro : cfg_.neg_ku_macro;
-  const float ku_at = cfg_.is_positive ? cfg_.pos_ku_atm   : cfg_.neg_ku_atm;
-  const float ki_mi = cfg_.is_positive ? cfg_.pos_ki_micro : cfg_.neg_ki_micro;
-  const float ki_ma = cfg_.is_positive ? cfg_.pos_ki_macro : cfg_.neg_ki_macro;
-  const float ki_at = cfg_.is_positive ? cfg_.pos_ki_atm   : cfg_.neg_ki_atm;
+    float pi_output;
+    bool needs_pressurizing;
 
-  float u_mi = 0.f, u_ma = 0.f, u_at = 0.f;
+    // 1. 제어 방향 결정 및 PI 출력 계산
+    if ( (cfg_.is_positive && err > 0.f) || (!cfg_.is_positive && err < 0.f) ) {
+        needs_pressurizing = true;
+        const float current_err = cfg_.is_positive ? err : -err;
 
-  // 3. PI 제어 출력 계산
-  if (cfg_.is_positive) { // 양압 챔버
-    if (err > 0.f) { // 가압 시 (압력 높여야 함)
-      u_mi = ku_mi * err + ki_mi * error_integral_;
-      // [수정됨] Macro 밸브 게인 승수 적용
-      u_ma = (ku_ma * err + ki_ma * error_integral_) * cfg_.macro_gain_multiplier;
-      u_at = 0.f;
+        // ★★★ 여기가 수정되었습니다 ★★★
+        if (cfg_.is_positive) {
+            // 양압 채널: 기존 로직 유지
+            pi_output = ku_mi * current_err + ki_mi * error_integral_;
+        } else {
+            // 음압 채널: error_integral_ (음수)의 부호를 반전시켜 I-term이 양수가 되도록 수정
+            pi_output = ku_mi * current_err - ki_mi * error_integral_;
+        }
+
+    } else {
+        needs_pressurizing = false;
+        const float current_err = cfg_.is_positive ? -err : err;
+        // 이 부분의 부호는 원래부터 올바르게 되어 있었습니다.
+        pi_output = ku_at * current_err - ki_at * error_integral_;
     }
-    else { // 감압 시 (압력 낮춰야 함)
-      u_mi = 0.f;
-      u_ma = 0.f;
-      u_at = ku_at * (-err) + ki_at * (-error_integral_);
-    }
-  } else { // 음압 챔버
-    // [수정됨] 음압 채널 제어 로직 수정
-    if (err > 0.f) { // 압력을 높여야 할 때 (대기압 쪽으로)
-      u_mi = 0.f;
-      u_ma = 0.f;
-      u_at = ku_at * err + ki_at * error_integral_; // err이 양수이므로 그대로 사용
-    }
-    else { // 압력을 낮춰야 할 때 (진공 쪽으로)
-      u_mi = ku_mi * (-err) + ki_mi * (-error_integral_); // err이 음수이므로 부호 반전
-      u_ma = (ku_ma * (-err) + ki_ma * (-error_integral_)) * cfg_.macro_gain_multiplier;
-      u_at = 0.f;
-    }
-  }
-  (void)P_micro; (void)P_macro;
 
-  // 4. 출력 클램핑
-  float u_mi_clamped = std::clamp(u_mi, 0.f, 100.f);
-  float u_ma_clamped = std::clamp(u_ma, 0.f, 100.f);
-  float u_at_clamped = std::clamp(u_at, 0.f, 100.f);
+    // 2. 조건부 적분 (안티 와인드업 로직)
+    // 이 로직은 양압/음압 모두에 대해 올바르게 동작합니다.
+    bool is_saturated = (pi_output >= 100.0f && err > 0.f) || (pi_output <= 0.0f && err < 0.f);
 
-  // 5. 안티 와인드업 (Anti-windup)
-  if (ki_mi != 0.f && u_mi != u_mi_clamped) {
-      error_integral_ = (u_mi_clamped - ku_mi * err) / ki_mi;
-  }
-  if (ki_ma != 0.f && u_ma != u_ma_clamped) {
-      error_integral_ = (u_ma_clamped - (ku_ma * err * cfg_.macro_gain_multiplier) ) / ki_ma;
-  }
-  if (ki_at != 0.f && u_at != u_at_clamped) {
-      error_integral_ = -( (u_at_clamped - ku_at * (-err)) / ki_at );
-  }
+    if (!is_saturated) {
+        error_integral_ += err * cfg_.Ts;
+    }
 
-  return {u_mi_clamped, u_ma_clamped, u_at_clamped};
+    // 3. 최종 밸브 출력 할당 및 클램핑
+    float u_mi = 0.f, u_ma = 0.f, u_at = 0.f;
+    if (needs_pressurizing) {
+        u_mi = std::clamp(pi_output, 0.f, 100.f);
+        u_ma = std::clamp(pi_output * cfg_.macro_gain_multiplier, 0.f, 100.f);
+    } else {
+        u_at = std::clamp(pi_output, 0.f, 100.f);
+    }
+    
+    last_error_ = err;
+    
+    (void)P_micro; (void)P_macro;
+
+    return {u_mi, u_ma, u_at};
 }
 
 void AcadosMpc::build_mpc_qp(const std::vector<float>& A_seq,
@@ -333,63 +326,31 @@ std::array<float,3> AcadosMpc::solve_qp_first_step(const Eigen::MatrixXf& P,
   return du3;
 }
 
-// [수정됨] 상호 배제 로직 추가
 void AcadosMpc::solve(const SensorSnapshot& s, float /*dt_ms*/,
                       std::array<uint16_t, MPC_OUT_DIM>& out3)
 {
-  float P_now   = current_P_now_;
-  float P_micro = current_P_micro_;
-  float P_macro = current_P_macro_;
+  float P_now = current_P_now_;
 
-  auto uref_arr = compute_input_reference(P_now, P_micro, P_macro);
-  Eigen::RowVector3f u_ref(uref_arr[0], uref_arr[1], uref_arr[2]);
+  // 1. PI 제어기를 통해 밸브 개방률(0~100)을 계산
+  auto u0_arr = compute_input_reference(P_now, current_P_micro_, current_P_macro_);
+  
+  // u0_arr[0] = micro, u0_arr[1] = macro, u0_arr[2] = atm
 
-  std::fill(P_ref_.begin(), P_ref_.end(), cfg_.ref_value);
+  // [중요] 복잡한 MPC/QP 보정 로직을 비활성화하고 PI 제어 결과만 사용합니다.
+  // 이전에 문제를 일으켰던 update_linearization, build_mpc_qp, solve_qp_first_step 호출을 모두 제거했습니다.
 
-  update_linearization(s, cfg_.ref_value, u_ref);
+  last_u3_ = u0_arr;
 
-  const int Nu = cfg_.n_u * cfg_.NP;
-  Pmat_.setZero(Nu, Nu);
-  qvec_.setZero(Nu);
-  Acon_.setZero(Nu, Nu);
-  LL_.setZero(Nu);
-  UL_.setZero(Nu);
+  // 2. 0~100 사이의 값을 0~1023의 PWM 값으로 변환
+  // u0 = {micro, macro, atm}  -> out3 = {micro, atm, macro} 순서에 주의
+  out3[0] = static_cast<uint16_t>( std::round(u0_arr[0] * 10.23f) ); // micro
+  out3[1] = static_cast<uint16_t>( std::round(u0_arr[2] * 10.23f) ); // atm
+  out3[2] = static_cast<uint16_t>( std::round(u0_arr[1] * 10.23f) ); // macro
 
-  build_mpc_qp(A_seq_, B_seq_, P_now, P_ref_, Pmat_, qvec_, Acon_, LL_, UL_);
-
-  auto du3 = solve_qp_first_step(Pmat_, qvec_, Acon_, LL_, UL_);
-
-  std::array<float,3> u0{
-    std::clamp(uref_arr[0] + du3[0], cfg_.u_abs_min, cfg_.u_abs_max),
-    std::clamp(uref_arr[1] + du3[1], cfg_.u_abs_min, cfg_.u_abs_max),
-    std::clamp(uref_arr[2] + du3[2], cfg_.u_abs_min, cfg_.u_abs_max),
-  };
-  last_u3_ = u0;
-
-  // u0 = {micro, macro, atm}  -> PWM: [micro, atm, macro]
-  out3[0] = static_cast<uint16_t>( std::round(u0[0] * 10.23f) ); // micro
-  out3[1] = static_cast<uint16_t>( std::round(u0[2] * 10.23f) ); // atm
-  out3[2] = static_cast<uint16_t>( std::round(u0[1] * 10.23f) ); // macro
-
-  // [추가됨] 최종 출력단에서 상호 배제 로직 강제 적용
-  // 작은 노이즈에도 반응하지 않도록 약간의 데드존(0.01kPa) 설정
-  const float err = cfg_.ref_value - P_now;
-  if (cfg_.is_positive) { // 양압
-      if (err > 0.01f) { // 가압이 필요할 때
-          out3[1] = 0; // ATM 밸브를 강제로 닫음
-      } else if (err < -0.01f) { // 감압이 필요할 때
-          out3[0] = 0; // Micro 밸브를 강제로 닫음
-          out3[2] = 0; // Macro 밸브를 강제로 닫음
-      }
-  } else { // 음압
-      // [수정됨] 음압 채널 상호 배제 로직 수정
-      if (err > 0.01f) { // 압력을 높여야 할 때 (대기압 방향)
-          out3[0] = 0; // Micro 밸브를 강제로 닫음
-          out3[2] = 0; // Macro 밸브를 강제로 닫음
-      } else if (err < -0.01f) { // 압력을 낮춰야 할 때 (진공 방향)
-          out3[1] = 0; // ATM 밸브를 강제로 닫음
-      }
-  }
+  // 3. 최종 상호 배제 로직 (PI 로직과 통합 및 단순화)
+  // compute_input_reference 함수 내부에서 이미 가압/감압 시 
+  // 반대편 밸브를 0으로 만들고 있으므로, 여기서는 추가 로직이 필요 없습니다.
+  // 이전에 문제를 일으켰던 최종 override 로직을 모두 제거했습니다.
 }
 
 // ================================
@@ -519,9 +480,12 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   period_ms_ = this->declare_parameter<int>("period_ms", 1000 / PWM_RATE_HZ);
   enable_thread_pinning_ = this->declare_parameter<bool>("enable_thread_pinning", true);
   cpu_pins_param_ = this->declare_parameter<std::vector<int64_t>>("cpu_pins", std::vector<int64_t>{0,1,2,3});
+  filter_alpha_ = this->declare_parameter<double>("sensor_filter_alpha", 0.5);
 
   // ---- Sensor_calibration: per-channel ----
   sensor_.atm_offset = get_param_or<double>(this, "Sensor_calibration.atm_offset", 101.325);
+
+
 
   auto load_board = [&](const std::string& base, auto& arr, int expected_len){
     for (int i = 0; i < expected_len; ++i) {
@@ -763,34 +727,39 @@ void Controller::on_timer() {
     snap.b2 = sensors_b2_;
   }
 
-  {
-    std_msgs::msg::Float64MultiArray msg_b0, msg_b1, msg_b2;
-    msg_b0.data.reserve(ANALOG_B0);
-    msg_b1.data.reserve(ANALOG_B1);
-    msg_b2.data.reserve(ANALOG_B2);
+  // 1. 원본(raw) 압력 값을 kPa 단위로 계산
+  std::array<double, ANALOG_B0> raw_kpa_b0;
+  std::array<double, ANALOG_B1> raw_kpa_b1;
+  std::array<double, ANALOG_B2> raw_kpa_b2;
+  for(int i=0; i<ANALOG_B0; ++i) raw_kpa_b0[i] = sensor_.kpa_b0(i, snap.b0[i]);
+  for(int i=0; i<ANALOG_B1; ++i) raw_kpa_b1[i] = sensor_.kpa_b1(i, snap.b1[i]);
+  for(int i=0; i<ANALOG_B2; ++i) raw_kpa_b2[i] = sensor_.kpa_b2(i, snap.b2[i]);
 
-    for(int i=0; i<ANALOG_B0; ++i) msg_b0.data.push_back(sensor_.kpa_b0(i, snap.b0[i]));
-    for(int i=0; i<ANALOG_B1; ++i) msg_b1.data.push_back(sensor_.kpa_b1(i, snap.b1[i]));
-    for(int i=0; i<ANALOG_B2; ++i) msg_b2.data.push_back(sensor_.kpa_b2(i, snap.b2[i]));
-
-    pub_kpa_b0_->publish(msg_b0);
-    pub_kpa_b1_->publish(msg_b1);
-    pub_kpa_b2_->publish(msg_b2);
+  // 2. 필터 적용 (EMA: Exponential Moving Average)
+  if (!is_filter_initialized_) {
+    filtered_kpa_b0_ = raw_kpa_b0;
+    filtered_kpa_b1_ = raw_kpa_b1;
+    filtered_kpa_b2_ = raw_kpa_b2;
+    is_filter_initialized_ = true;
+  } else {
+    for(int i=0; i<ANALOG_B0; ++i) filtered_kpa_b0_[i] = filter_alpha_ * raw_kpa_b0[i] + (1.0 - filter_alpha_) * filtered_kpa_b0_[i];
+    for(int i=0; i<ANALOG_B1; ++i) filtered_kpa_b1_[i] = filter_alpha_ * raw_kpa_b1[i] + (1.0 - filter_alpha_) * filtered_kpa_b1_[i];
+    for(int i=0; i<ANALOG_B2; ++i) filtered_kpa_b2_[i] = filter_alpha_ * raw_kpa_b2[i] + (1.0 - filter_alpha_) * filtered_kpa_b2_[i];
   }
 
-  auto get_u16_b0 = [&](int idx)->uint16_t {
-    return (idx >= 0 && idx < ANALOG_B0) ? snap.b0[(size_t)idx] : 0;
-  };
-  auto get_u16_b1 = [&](int idx)->uint16_t {
-    return (idx >= 0 && idx < ANALOG_B1) ? snap.b1[(size_t)idx] : 0;
-  };
-  auto get_u16_b2 = [&](int idx)->uint16_t {
-    return (idx >= 0 && idx < ANALOG_B2) ? snap.b2[(size_t)idx] : 0;
-  };
-
-  const double P_line_pos_kPa   = sensor_.kpa_b2(4, get_u16_b2(4));
-  const double P_line_neg_kPa   = sensor_.kpa_b2(5, get_u16_b2(5));
-  const double P_line_macro_kPa = sensor_.kpa_b2(6, get_u16_b2(6));
+  // 3. 필터링된 값을 ROS 토픽으로 게시 (디버깅용)
+  std_msgs::msg::Float64MultiArray msg_b0, msg_b1, msg_b2;
+  msg_b0.data.assign(filtered_kpa_b0_.begin(), filtered_kpa_b0_.end());
+  msg_b1.data.assign(filtered_kpa_b1_.begin(), filtered_kpa_b1_.end());
+  msg_b2.data.assign(filtered_kpa_b2_.begin(), filtered_kpa_b2_.end());
+  pub_kpa_b0_->publish(msg_b0);
+  pub_kpa_b1_->publish(msg_b1);
+  pub_kpa_b2_->publish(msg_b2);
+  
+  // 4. 이후의 모든 제어 로직은 '필터링된' 값을 사용
+  const double P_line_pos_kPa   = filtered_kpa_b2_[4];
+  const double P_line_neg_kPa   = filtered_kpa_b2_[5];
+  const double P_line_macro_kPa = filtered_kpa_b2_[6];
   const double P_atm_kPa        = sensor_.kpa_atm();
 
   if (macro_switch_pwm_index_ >= 0 && macro_switch_pwm_index_ < PWM_MAX_B2) {
@@ -816,25 +785,23 @@ void Controller::on_timer() {
   for (auto& mpc : mpcs_) {
     if ((mpc->cfg().global_id % MPC_PHASES) != phase) continue;
 
+    // [수정] 람다 캡처 목록에서 올바른 멤버 변수(뒤에 밑줄이 있는)를 사용하도록 수정
     tasks.emplace_back([this,
                         &mpc,
                         snap,
-                        get_u16_b0, get_u16_b1, get_u16_b2,
+                        filtered_kpa_b0 = this->filtered_kpa_b0_,
+                        filtered_kpa_b1 = this->filtered_kpa_b1_,
+                        filtered_kpa_b2 = this->filtered_kpa_b2_,
                         P_line_pos_kPa, P_line_neg_kPa, P_line_macro_kPa, P_atm_kPa,
                         ref_snapshot]() {
       const int b   = mpc->cfg().board_index;
       const int ref = mpc->cfg().reference_channel;
 
-      uint16_t raw = 0;
-      if      (b == 0) raw = get_u16_b0(ref);
-      else if (b == 1) raw = get_u16_b1(ref);
-      else             raw = get_u16_b2(ref);
-
       double P_state_kPa = 101.325;
-      if      (b == 0) P_state_kPa = sensor_.kpa_b0(ref, raw);
-      else if (b == 1) P_state_kPa = sensor_.kpa_b1(ref, raw);
-      else             P_state_kPa = sensor_.kpa_b2(ref, raw);
-
+      if      (b == 0) P_state_kPa = filtered_kpa_b0[ref];
+      else if (b == 1) P_state_kPa = filtered_kpa_b1[ref];
+      else             P_state_kPa = filtered_kpa_b2[ref];
+      
       const bool pos_side = mpc->cfg().is_positive;
 
       mpc->current_P_atm_   = static_cast<float>(P_atm_kPa);
@@ -858,7 +825,7 @@ void Controller::on_timer() {
       const int bidx = mpc->cfg().board_index;
       if      (bidx == 0) { zoh_b0_[off+0] = u3[0]; zoh_b0_[off+1] = u3[1]; zoh_b0_[off+2] = u3[2]; }
       else if (bidx == 1) { zoh_b1_[off+0] = u3[0]; zoh_b1_[off+1] = u3[1]; zoh_b1_[off+2] = u3[2]; }
-      else                 { zoh_b2_[off+0] = u3[0]; zoh_b2_[off+1] = u3[1]; zoh_b2_[off+2] = u3[2]; }
+      else                { zoh_b2_[off+0] = u3[0]; zoh_b2_[off+1] = u3[1]; zoh_b2_[off+2] = u3[2]; }
     });
   }
 

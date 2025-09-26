@@ -137,6 +137,8 @@ private:
   Eigen::VectorXf qvec_, LL_, UL_;
   std::array<float,3> last_u3_{0,0,0};
   float error_integral_{0.0f};
+  float last_error_{0.0f};
+
 };
 
 // ================================
@@ -207,6 +209,11 @@ private:
   std::array<uint16_t, ANALOG_B0> sensors_b0_{};
   std::array<uint16_t, ANALOG_B1> sensors_b1_{};
   std::array<uint16_t, ANALOG_B2> sensors_b2_{};
+  double filter_alpha_{0.5}; // 필터 계수 (0.0 ~ 1.0)
+  bool is_filter_initialized_{false};
+  std::array<double, ANALOG_B0> filtered_kpa_b0_{};
+  std::array<double, ANALOG_B1> filtered_kpa_b1_{};
+  std::array<double, ANALOG_B2> filtered_kpa_b2_{};
   std::array<uint16_t, PWM_MAX_B0> zoh_b0_{};
   std::array<uint16_t, PWM_MAX_B1> zoh_b1_{};
   std::array<uint16_t, PWM_MAX_B2> zoh_b2_{};
