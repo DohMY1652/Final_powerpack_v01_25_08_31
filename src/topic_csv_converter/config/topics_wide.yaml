@@ -1,0 +1,22 @@
+# topics_wide.yaml
+wide_logger_node:
+  ros__parameters:
+    # 저장할 토픽 목록 (순서가 CSV 열 순서가 됨)
+    topics: [
+      "/controller/mpc_refs_kpa",
+      "/controller/b0/sensors_kpa", 
+      "/controller/b1/sensors_kpa", 
+      "/controller/b2/sensors_kpa", 
+    ]
+    # 각 토픽에 해당하는 메시지 타입 목록
+    types: [
+      "std_msgs/msg/Float64MultiArray", 
+      "std_msgs/msg/Float64MultiArray",
+      "std_msgs/msg/Float64MultiArray",
+      "std_msgs/msg/Float64MultiArray",
+    ]
+    # 데이터를 저장할 파일 이름
+    filename: "log/logging_test_v02_25_09_28.csv"
+    
+    # 로깅 주기 (단위: Hz). 10.0은 1초에 10번 저장하라는 의미.
+    frequency: 100.0
