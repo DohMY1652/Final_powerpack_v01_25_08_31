@@ -16,7 +16,7 @@ wide_logger_node:
       "std_msgs/msg/Float64MultiArray",
     ]
     # 데이터를 저장할 파일 이름
-    filename: "log/logging_test_v02_25_09_28.csv"
+    filename: "log/logging_test_v02_25_09_29.csv"
     
     # 로깅 주기 (단위: Hz). 10.0은 1초에 10번 저장하라는 의미.
     frequency: 100.0

@@ -105,6 +105,7 @@ public:
     float volume_m3{1.0e-5f};
     // [추가됨] Macro 밸브 사용량 조절을 위한 게인 승수
     float macro_gain_multiplier{1.0f};
+    float last_ref_value_ = 101.325f;
   };
 
   explicit AcadosMpc(const Config& cfg);
@@ -239,8 +240,7 @@ private:
     // [추가됨] Macro 밸브 게인 조절 파라미터
     double macro_gain_multiplier{1.0};
   } mpc_;
-  std::array<double,3> vol_pos_ml_{100.0,100.0,100.0};
-  std::array<double,3> vol_neg_ml_{100.0,100.0,100.0};
+  std::array<double,MPC_TOTAL> vol_ml_; 
   bool sys_sensor_print_{true}; 
   bool sys_reference_print_{true};
   bool sys_pwm_print_{true};

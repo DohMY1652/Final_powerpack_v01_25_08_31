@@ -1,7 +1,10 @@
 #pragma once
 
 #include <rclcpp/rclcpp.hpp>
-#include <std_msgs/msg/u_int16_multi_array.hpp>
+// === [수정됨] 필요한 헤더 (센서: UInt16, 명령: UInt16) ===
+// #include <std_msgs/msg/float32_multi_array.hpp> // 사용 안 함
+#include <std_msgs/msg/u_int16_multi_array.hpp> // 센서 및 명령용
+// =======================================================
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
@@ -21,12 +24,14 @@
 #include <sstream>
 #include <memory>
 #include <thread>
+#include <array> // for b3_analog_cache_
 
 using namespace std::chrono_literals;
 
 static constexpr int PWM_MAX    = 15; // board3 uses 15 channels
 static constexpr int ANALOG_MAX = 7;  // board3 uses 7 channels
 
+// 1. PWM 보드 (1, 2, 3)용 패킷
 #pragma pack(push, 1)
 struct SensorPacket {
   uint8_t  hdr0;      // 0xAA
@@ -47,10 +52,15 @@ struct CommandPacket {
 };
 #pragma pack(pop)
 
+// 2. ADC 보드 (4)용 패킷 (헤더 0xBB 0x66)
+const size_t ADC_PACKET_SIZE = 30; // 2B Hdr + 4B TS + 24B Data (12ch)
+const size_t ADC_HEADER_SIZE = 2;
+const size_t ADC_TS_SIZE = 4;
+const size_t ADC_DATA_SIZE = 24;
+
+
 class TeensyBridge : public rclcpp::Node {
 public:
-  // [수정됨] 모호성을 제거하기 위해 기본 생성자 선언을 삭제하고,
-  // NodeOptions를 받는 생성자만 남겨둡니다. 기본 인자 덕분에 여전히 new TeensyBridge() 호출이 가능합니다.
   explicit TeensyBridge(const rclcpp::NodeOptions& opts = rclcpp::NodeOptions());
   ~TeensyBridge() override;
 
@@ -71,7 +81,10 @@ private:
   void on_stats_timer();
   rcl_interfaces::msg::SetParametersResult on_param_change(
       const std::vector<rclcpp::Parameter>& params);
-  void parse_sensor_packets(size_t idx);
+
+  void parse_pwm_board_packets(size_t idx); // PWM 보드 1,2,3용
+  void parse_adc_board_packets(size_t idx); // ADC 보드 4용
+
   void on_cmd(size_t idx, const std_msgs::msg::UInt16MultiArray::SharedPtr msg);
   void on_monitor_enable(size_t idx, const std_msgs::msg::Bool::SharedPtr msg);
 
@@ -82,6 +95,7 @@ private:
     uint8_t     board_id{1};
     int         pwm_count{12};
     int         analog_count{4};
+    bool        is_adc_board{false}; // ADC 보드(4) 식별 플래그
 
     // serial
     int         fd{-1};
@@ -89,7 +103,6 @@ private:
     uint8_t     tx_seq{0};
 
     // ROS I/O
-    rclcpp::Publisher<std_msgs::msg::UInt16MultiArray>::SharedPtr sensor_pub;
     rclcpp::Subscription<std_msgs::msg::UInt16MultiArray>::SharedPtr cmd_sub;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr stats_pub;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr monitor_sub;
@@ -115,7 +128,7 @@ private:
   std::vector<int64_t>     board_ids_param_;
   std::vector<int64_t>     pwm_channels_param_;
   std::vector<int64_t>     analog_channels_param_;
-  int      period_ms_{1};
+  int      period_ms_{10}; // 100Hz (10ms)
   int      stats_period_ms_{1000};
   bool     monitor_enabled_default_{false};
   bool     lock_mem_{true};
@@ -127,6 +140,17 @@ private:
 
   // boards
   std::vector<std::unique_ptr<Board>> boards_;
+
+  // === [수정됨] 센서 퍼블리셔 (b0, b1, b2) -> UInt16MultiArray ===
+  rclcpp::Publisher<std_msgs::msg::UInt16MultiArray>::SharedPtr sensor_pub_b0_;
+  rclcpp::Publisher<std_msgs::msg::UInt16MultiArray>::SharedPtr sensor_pub_b1_;
+  rclcpp::Publisher<std_msgs::msg::UInt16MultiArray>::SharedPtr sensor_pub_b2_;
+  // ==========================================================
+
+  // === [수정됨] b2 토픽 융합을 위한 보드 3의 아날로그 값 캐시 (uint16_t) ===
+  std::mutex b3_cache_mutex_;
+  std::array<uint16_t, 3> b3_analog_cache_{}; // 핀 20, 21, 22 값 (mV)
+  // ====================================================================
 
   // stats window anchor
   std::chrono::steady_clock::time_point stats_window_start_{std::chrono::steady_clock::now()};
