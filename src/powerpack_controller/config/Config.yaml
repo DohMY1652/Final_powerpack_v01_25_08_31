@@ -1,39 +1,39 @@
-# [MODIFIED] Added 'pp_controller:' as the top-level key and indented all content.
 pp_controller:
   ros__parameters:
+    # [수정됨] 양압(Positive) 채널의 개수 설정 (0 ~ num-1 까지 양압, 나머지 음압)
+    num_positive_channels: 8
+    
     active_mpc_channels: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     sensor_filter_alpha: 0.01
-
 
     # === per-channel calibration (map-based) ===
     Sensor_calibration:
       atm_offset: 101.325
       b0:
         "0": { offset: 1007.0,  gain: 0.250 }
-        "1": { offset: 996.0,  gain: 0.250 }
+        "1": { offset: 996.0,   gain: 0.250 }
         "2": { offset: 1001.0,  gain: 0.250 }
         "3": { offset: 1026.0,  gain: 0.250 }
       b1:
-        "0": { offset: 981.0,  gain: 0.250 }
+        "0": { offset: 981.0,   gain: 0.250 }
         "1": { offset: 1004.0,  gain: 0.250 }
-        "2": { offset: 950.0,  gain: -0.02525 }
-        "3": { offset: 952.0,  gain: -0.02525 }
+        "2": { offset: 950.0,   gain: -0.02525 }
+        "3": { offset: 952.0,   gain: -0.02525 }
       b2:
-        "0": { offset: 934.0,  gain: -0.02525 }
-        "1": { offset: 948.0,  gain: -0.02525 }
-        "2": { offset: 958.0,  gain: -0.02525 }
-        "3": { offset: 958.0,  gain: -0.02525 }
-        "4": { offset: 666.0,  gain: 0.3150 }   # pos line (핀20)
-        "5": { offset: 655.0,  gain: -0.0378 }  # neg line (핀21)
-        "6": { offset: 402.0,  gain: 0.6800 }   # macro line (핀22)
+        "0": { offset: 934.0,   gain: -0.02525 }
+        "1": { offset: 948.0,   gain: -0.02525 }
+        "2": { offset: 958.0,   gain: -0.02525 }
+        "3": { offset: 958.0,   gain: -0.02525 }
+        "4": { offset: 666.0,   gain: 0.3150 }    # pos line (핀20)
+        "5": { offset: 655.0,   gain: -0.0378 }   # neg line (핀21)
+        "6": { offset: 402.0,   gain: 0.6800 }    # macro line (핀22)
 
     RefTcp:
       enable: true
-      host: "169.254.46.254"  # 👈 파이썬 코드가 접속하던 서버 IP
-      # host: "127.0.0.1"       # 👈 "169.254.46.254" 대신 "127.0.0.1" (localhost)로 변경
-      port: 2274           # 👈 파이썬 코드가 접속하던 서버 포트
+      host: "169.254.46.254"
+      port: 2272
       expect_n: 12
-      scale: 0.01             # 👈 스케일 (예: 10132 -> 101.32)
+      scale: 0.01
 
     LinePID:
       pos:
@@ -42,15 +42,14 @@ pp_controller:
         kd: 0.0
         ref: 400.0
         pwm_index: 12
-      # 주의: 현재 코드엔 neg PID 사용 안 함(무시됨)
-
-      # [추가됨] 음압 라인 PID 설정
+      
       neg:
-        kp: 0.8      # 예시값, 실제 시스템에 맞게 튜닝 필요
-        ki: 0.2      # 예시값, 실제 시스템에 맞게 튜닝 필요
-        kd: 0.0      # 예시값, 실제 시스템에 맞게 튜닝 필요
-        ref: 40.0      # 목표 음압(절대압 기준), 예시값
-        pwm_index: 13  # 보드2의 14번째 PWM 채널
+        kp: 0.8
+        ki: 0.2
+        kd: 0.0
+        ref: 40.0
+        pwm_index: 13
+      
       out_min: 0.0
       out_max: 100.0
 
@@ -76,8 +75,6 @@ pp_controller:
       neg_ku_macro: 0.05
       neg_ku_atm: 3.0
 
-      # --- 새로 추가할 I 게인 (ki) ---
-  # 처음에는 작은 값으로 시작하여 튜닝하는 것을 권장합니다.
       pos_ki_micro: 0.5
       pos_ki_macro: 0.05
       pos_ki_atm: 0.5
@@ -85,61 +82,22 @@ pp_controller:
       neg_ki_macro: 0.05
       neg_ki_atm: 0.5
       
-      # [추가됨] Macro 밸브 사용량을 줄이기 위한 게인 승수 (0.0 ~ 1.0 사이 값 권장)
       macro_gain_multiplier: 1.0
 
-
-
-    # ROBOTORY chamber volume
+    # ROBOTORY chamber volume (Individual Channels)
     channel_volume:
-      #positive
-      ch0_ml: 1000 # SORO
-      ch1_ml: 1000 # SORO
-      ch2_ml: 300 # SORO
-      ch3_ml: 300 # SORO
-      ch4_ml: 600 # CAMAS
-      ch5_ml: 600 # CAMAS
-      #negative
-      ch6_ml: 1000 # SORO
-      ch7_ml: 1000 # SORO 
-      ch8_ml: 300 # SORO
-      ch9_ml: 300 # SORO
+      ch0_ml: 1000
+      ch1_ml: 1000
+      ch2_ml: 300
+      ch3_ml: 300
+      ch4_ml: 600
+      ch5_ml: 600
+      ch6_ml: 1000
+      ch7_ml: 1000
+      ch8_ml: 300
+      ch9_ml: 300
       ch10_ml: 0
-      ch11_ml: 0 
-# Fianl channel : Positive 8, negtaive 4
-
-  # # channel_volume:
-  #     #positive
-  #     ch0_ml: 0
-  #     ch1_ml: 0
-  #     ch2_ml: 0
-  #     ch3_ml: 0
-  #     ch4_ml: 1000
-  #     ch5_ml: 0
-  #     #negative
-  #     ch6_ml: 0
-  #     ch7_ml: 0
-  #     ch8_ml: 0
-  #     ch9_ml: 0
-  #     ch10_ml: 0 
-  #     ch11_ml: 0 
-
-# ROBOTORY chamber volume
-    # channel_volume:
-    #   #positive
-    #   ch0_ml: 50
-    #   ch1_ml: 50
-    #   ch2_ml: 50
-    #   ch3_ml: 50
-    #   ch4_ml: 50
-    #   ch5_ml: 50
-    #   #negative
-    #   ch6_ml: 50
-    #   ch7_ml: 50
-    #   ch8_ml: 50
-    #   ch9_ml: 50
-    #   ch10_ml: 50
-    #   ch11_ml: 50
+      ch11_ml: 0
 
     system_parameters:
       sensor_print: false
@@ -149,6 +107,3 @@ pp_controller:
 
     MacroSwitch:
       threshold_kpa: 600.0
-
-      # robotory rio ip : 169.254.46.254
-      # current port : 2279

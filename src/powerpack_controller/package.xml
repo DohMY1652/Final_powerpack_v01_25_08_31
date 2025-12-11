@@ -1,10 +1,11 @@
 <?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>powerpack_controller</name>
-  <version>0.0.0</version>
-  <description>Powerpack controller with Teensy bridge and TCP reference input</description>
-  <maintainer email="risebrl@todo.todo">risebrl</maintainer>
-  <license>MIT</license>
+  <version>0.0.1</version>
+  <description>ROS 2 Controller for Pneumatic Soft Robot</description>
+  <maintainer email="user@todo.todo">User</maintainer>
+  <license>TODO</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
@@ -12,11 +13,9 @@
   <depend>std_msgs</depend>
   <depend>rcl_interfaces</depend>
 
-  <exec_depend>launch</exec_depend>
-  <exec_depend>launch_ros</exec_depend>
-
-  <test_depend>ament_lint_auto</test_depend>
-  <test_depend>ament_lint_common</test_depend>
+  <depend>libeigen-dev</depend>
+  
+  <depend>qpoases_vendor</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

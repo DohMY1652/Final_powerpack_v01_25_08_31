@@ -11,7 +11,7 @@ import sys
 HOST = '0.0.0.0' 
 
 # C++ config.yaml의 RefClient.port와 일치해야 함
-PORT = 2272
+PORT = 2274
 
 # C++이 기대하는 데이터 형식 (Big-Endian, 12-ch, uint16_t)
 FORMAT_STRING = '>12H'

@@ -1,0 +1,16 @@
+# .gitignore 내용
+
+# 1. ROS 2 빌드 결과물 무시 (용량이 크고 매번 바뀜)
+build/
+install/
+log/
+
+# 2. 외부 라이브러리 소스 무시 (qpoases_vendor)
+# 이 폴더는 우리가 직접 짠 코드가 아니라 외부에서 가져온 것이므로,
+# 보통은 소스코드에 포함시키지 않고 설치 스크립트로 따로 받거나 서브모듈로 관리합니다.
+src/qpoases_vendor/
+
+# 3. IDE 설정 파일 등
+.vscode/
+.idea/
+*.swp

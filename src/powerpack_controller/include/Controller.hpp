@@ -15,13 +15,14 @@
 #include <functional>
 #include <memory>
 #include <atomic>
-#include <fstream> // [수정됨] 파일 출력을 위해 추가
-#include <sstream> // 출력을 위해 추가
-#include <iomanip> // 출력을 위해 추가
-#include <cstring> // std::memcpy를 위해 추가
-#include <string>  // [추가] RefTcpClient가 사용
+#include <fstream> 
+#include <sstream> 
+#include <iomanip> 
+#include <cstring> 
+#include <string>  
 
-// [추가] RefTcpClient가 사용하는 리눅스 전용 헤더
+#include <qpOASES.hpp>
+
 #ifdef __linux__
   #include <pthread.h>
   #include <sys/socket.h>
@@ -32,7 +33,6 @@
   #include <unistd.h>
   #include <errno.h>
 #endif
-
 
 // ================================
 // Fixed sizes for this project
@@ -47,31 +47,60 @@ static constexpr int ANALOG_B2  = 7;
 static constexpr int PWM_CLAMP_MIN = 0;
 static constexpr int PWM_CLAMP_MAX = 1023;
 
-// Outer loop (publish) and MPC rate
 static constexpr int PWM_RATE_HZ   = 1000; // 1 kHz
 static constexpr int MPC_RATE_HZ   = 250;  // 250 Hz
-static constexpr int MPC_PHASES    = PWM_RATE_HZ / MPC_RATE_HZ; // = 4
+static constexpr int MPC_PHASES    = PWM_RATE_HZ / MPC_RATE_HZ; 
 static_assert(MPC_PHASES == 4, "Expecting 1k/250Hz phasing = 4");
 
 static constexpr int MPC_PER_BOARD = 4;
 static constexpr int MPC_TOTAL     = 12;
-static constexpr int MPC_OUT_DIM   = 3; // each MPC -> 3 PWM channels
+static constexpr int MPC_OUT_DIM   = 3; 
 
-// Forward-declare your external QP if you want to inject it later
-class QP;
+// QP Solver Wrapper
+class QP {
+public:
+    QP(int nv, int nc) : solver_(nv, nc) {
+        options_.setToMPC(); 
+        options_.printLevel = qpOASES::PL_NONE;
+        solver_.setOptions(options_);
+    }
 
-// ================================
-// Snapshot (copied once per tick)
-// ================================
+    bool solve(const Eigen::MatrixXf& H, const Eigen::VectorXf& g,
+               const Eigen::VectorXf& lb, const Eigen::VectorXf& ub,
+               Eigen::VectorXf& solution) 
+    {
+        Eigen::MatrixXd Hd = H.cast<double>();
+        Eigen::VectorXd gd = g.cast<double>();
+        Eigen::VectorXd lbd = lb.cast<double>();
+        Eigen::VectorXd ubd = ub.cast<double>();
+
+        int nWSR = 100; 
+        
+        qpOASES::returnValue ret = solver_.init(Hd.data(), gd.data(), nullptr, 
+                                                lbd.data(), ubd.data(), 
+                                                nullptr, nullptr, 
+                                                nWSR);
+
+        if (ret == qpOASES::SUCCESSFUL_RETURN) {
+            Eigen::VectorXd sol(H.rows());
+            solver_.getPrimalSolution(sol.data());
+            solution = sol.cast<float>(); 
+            return true;
+        }
+        return false;
+    }
+
+private:
+    qpOASES::SQProblem solver_;
+    qpOASES::Options options_;
+};
+
 struct SensorSnapshot {
   std::array<uint16_t, ANALOG_B0> b0{};
   std::array<uint16_t, ANALOG_B1> b1{};
   std::array<uint16_t, ANALOG_B2> b2{};
 };
 
-// ================================
-// Simple thread pool (with optional CPU pinning)
-// ================================
 class ThreadPool {
 public:
   explicit ThreadPool(size_t num_threads, const std::vector<int>& pin_cpus = {});
@@ -89,13 +118,9 @@ private:
   std::vector<int> pin_cpus_;
 };
 
-// ================================
-// MPC module (Eigen-based QP build; solver pluggable)
-// ================================
 class AcadosMpc {
 public:
   struct Config {
-    // Identification / mapping
     int board_index{0};
     int global_id{0};
     int pwm_offset{0};
@@ -120,7 +145,6 @@ public:
     float u_abs_min{0.0f};
     float u_abs_max{100.0f};
     float volume_m3{1.0e-5f};
-    // [추가됨] Macro 밸브 사용량 조절을 위한 게인 승수
     float macro_gain_multiplier{1.0f};
     float last_ref_value_ = 101.325f;
   };
@@ -156,12 +180,8 @@ private:
   std::array<float,3> last_u3_{0,0,0};
   float error_integral_{0.0f};
   float last_error_{0.0f};
-
 };
 
-// ================================
-// Sensor calibration (per-channel)
-// ================================
 struct SensorCalib {
   struct Channel { double offset{1.0}; double gain{250.0}; };
   double atm_offset{101.325};
@@ -174,23 +194,15 @@ struct SensorCalib {
   inline double kpa_b2(int idx, uint16_t raw) const { if (idx < 0 || idx >= (int)b2.size()) return this->kpa_atm(); const auto& c = b2[(size_t)idx]; return (double(raw) - c.offset) * c.gain + this->kpa_atm(); }
 };
 
-
-// ================================
-// RefTcpClient (신규 추가, RefTcpServer 대체)
-// 파이썬 클라이언트(tcp_test.py)와 동일한 역할 (레퍼런스 수신용)
-// [수정됨] .cpp 파일에서 .hpp 파일로 이동
-// ================================
 class RefTcpClient {
 public:
     struct Config {
-        bool enable = false; // 👈 [수정] 이 줄을 추가하세요.
+        bool enable = false; 
         std::string host = "169.254.46.254";
         int port = 2272;
-        int expect_n = 12; // 수신할 정수 개수
-        double scale = 0.01; // 스케일 (config.yaml에서 로드)
+        int expect_n = 12; 
+        double scale = 0.01; 
     };
-
-    // 12개의 double 값을 전달하는 콜백
     using Callback = std::function<void(const std::array<double, 12>&)>;
 
     RefTcpClient(const Config& cfg, Callback cb)
@@ -215,16 +227,15 @@ private:
 #ifndef __linux__
         return;
 #else
-        // 파이썬 코드의 설정과 일치
-        const size_t NUM_INTEGERS = (size_t)cfg_.expect_n;      // 12
-        const size_t BYTES_PER_INT = sizeof(uint16_t);      // 2
-        const size_t BUFFER_SIZE = NUM_INTEGERS * BYTES_PER_INT; // 24
+        const size_t NUM_INTEGERS = (size_t)cfg_.expect_n;      
+        const size_t BYTES_PER_INT = sizeof(uint16_t);      
+        const size_t BUFFER_SIZE = NUM_INTEGERS * BYTES_PER_INT; 
         
-        std::vector<char> buffer(BUFFER_SIZE); // 24바이트 수신 버퍼
-        std::array<double, 12> out_values; // 콜백에 전달할 배열 (MPC_TOTAL=12)
+        std::vector<char> buffer(BUFFER_SIZE); 
+        std::array<double, 12> out_values; 
 
         while (!stop_.load()) {
-            client_fd_ = -1; // 루프 시작 시 소켓 초기화
+            client_fd_ = -1; 
             try {
                 client_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
                 if (client_fd_ < 0) throw std::runtime_error("Socket creation failed");
@@ -239,14 +250,12 @@ private:
 
                 RCLCPP_INFO(rclcpp::get_logger("RefTcpClient"), "Connecting to reference server %s:%d...", cfg_.host.c_str(), cfg_.port);
 
-                // 1. [연결] s.connect()
                 if (::connect(client_fd_, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
                     throw std::runtime_error("Connection Failed");
                 }
                 
                 RCLCPP_INFO(rclcpp::get_logger("RefTcpClient"), "Reference server connected.");
 
-                // 2. [수신] s.recv() 루프
                 while (!stop_.load()) {
                     size_t total_recd = 0;
                     while (total_recd < BUFFER_SIZE && !stop_.load()) {
@@ -259,23 +268,18 @@ private:
                         total_recd += (size_t)n;
                     }
 
-                    // 3. 24바이트 수신 완료 -> 파싱
                     if (total_recd == BUFFER_SIZE) {
                         const char* ptr = buffer.data();
                         for (size_t i = 0; i < NUM_INTEGERS; ++i) {
-                            uint16_t net_val; // Big-Endian
+                            uint16_t net_val; 
                             std::memcpy(&net_val, ptr, BYTES_PER_INT);
                             ptr += BYTES_PER_INT;
-                            uint16_t host_val = ntohs(net_val); // Big-Endian -> Host
-                            
-                            // C++ 서버의 스케일 적용 (기존 RefTcpServer 로직 동일)
+                            uint16_t host_val = ntohs(net_val); 
                             out_values[i] = static_cast<double>(host_val) * cfg_.scale;
                         }
-                        // 4. 콜백 함수 호출 (Controller의 mpc_ref_kpa_ 업데이트)
                         cb_(out_values);
                     }
-                } // end recv loop
-
+                } 
             } catch (const std::exception& e) {
                 RCLCPP_ERROR(rclcpp::get_logger("RefTcpClient"), "%s", e.what());
                 if (client_fd_ >= 0) {
@@ -284,11 +288,10 @@ private:
                 }
                 if (!stop_.load()) {
                     RCLCPP_INFO(rclcpp::get_logger("RefTcpClient"), "Reconnecting in 5 seconds...");
-                    std::this_thread::sleep_for(std::chrono::seconds(5)); // [수정] 5s -> std::chrono::seconds(5)
+                    std::this_thread::sleep_for(std::chrono::seconds(5)); 
                 }
             }
-        } // end main loop
-
+        } 
         if (client_fd_ >= 0) ::close(client_fd_);
 #endif
     }
@@ -300,14 +303,10 @@ private:
     int client_fd_ = -1;
 };
 
-
-// ================================
-// Controller node
-// ================================
 class Controller : public rclcpp::Node {
 public:
   explicit Controller(const rclcpp::NodeOptions& opts = rclcpp::NodeOptions());
-  ~Controller() override; // [수정됨] 소멸자 구현을 위해 default 제거
+  ~Controller() override; 
 
 private:
   void on_sensor_b0(const std_msgs::msg::UInt16MultiArray::SharedPtr msg);
@@ -318,12 +317,15 @@ private:
   void inner_loop_1khz(const SensorSnapshot& s, float dt_ms);
   inline uint16_t clamp_pwm(int v) const { return static_cast<uint16_t>( std::min(std::max(v, PWM_CLAMP_MIN), PWM_CLAMP_MAX) ); }
   void publish_cmds();
-  
-
+   
 private:
   int period_ms_{1000 / PWM_RATE_HZ};
   bool enable_thread_pinning_{true};
   std::vector<int64_t> cpu_pins_param_;
+  
+  // [수정됨] 양압 채널의 개수를 저장할 변수
+  int num_positive_channels_{8};
+
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::Subscription<std_msgs::msg::UInt16MultiArray>::SharedPtr sub_b0_, sub_b1_, sub_b2_;
   rclcpp::Publisher<std_msgs::msg::UInt16MultiArray>::SharedPtr pub_b0_, pub_b1_, pub_b2_;
@@ -334,7 +336,7 @@ private:
   std::array<uint16_t, ANALOG_B0> sensors_b0_{};
   std::array<uint16_t, ANALOG_B1> sensors_b1_{};
   std::array<uint16_t, ANALOG_B2> sensors_b2_{};
-  double filter_alpha_{0.5}; // 필터 계수 (0.0 ~ 1.0)
+  double filter_alpha_{0.5}; 
   bool is_filter_initialized_{false};
   std::array<double, ANALOG_B0> filtered_kpa_b0_{};
   std::array<double, ANALOG_B1> filtered_kpa_b1_{};
@@ -356,15 +358,16 @@ private:
   int  pid_pos_index_{18};
   int  pid_neg_index_{19};
   struct MpcYaml {
-    int    NP{5}; int n_x{1}; int n_u{3}; double Ts{0.01}; double Q_value{10.0}; double R_value{1.0};
+    int   NP{5}; int n_x{1}; int n_u{3}; double Ts{0.01}; double Q_value{10.0}; double R_value{1.0};
     double pos_ku_micro{0.5}, pos_ku_macro{0.5}, pos_ku_atm{2.0};
     double neg_ku_micro{3.0}, neg_ku_macro{3.0}, neg_ku_atm{6.0};
     double pos_ki_micro{0.0}, pos_ki_macro{0.0}, pos_ki_atm{0.0};
     double neg_ki_micro{0.0}, neg_ki_macro{0.0}, neg_ki_atm{0.0};
-    // [추가됨] Macro 밸브 게인 조절 파라미터
     double macro_gain_multiplier{1.0};
   } mpc_;
-  std::array<double,MPC_TOTAL> vol_ml_; 
+  
+  std::array<double, MPC_TOTAL> vol_ml_;
+
   bool sys_sensor_print_{true}; 
   bool sys_reference_print_{true};
   bool sys_pwm_print_{true};
@@ -385,7 +388,6 @@ private:
   double macro_switch_threshold_kpa_{120.0};
   int    macro_switch_pwm_index_{14};
 
-  // [수정됨] 데이터 로깅을 위한 멤버 변수 추가
-  int log_channel_id_{-1};      // 로깅할 채널의 global_id, -1이면 비활성화
-  std::ofstream log_file_;      // 로그 파일 스트림
+  int log_channel_id_{-1};      
+  std::ofstream log_file_;      
 };

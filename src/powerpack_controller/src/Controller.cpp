@@ -20,9 +20,6 @@
 using std::placeholders::_1;
 using namespace std::chrono_literals;
 
-// ---------------------------
-// 작은 헬퍼 (파라미터 읽기)
-// ---------------------------
 template <typename T>
 static T get_param_or(rclcpp::Node* node, const std::string& name, const T& defv) {
   try {
@@ -92,15 +89,11 @@ void ThreadPool::run_batch_and_wait(std::vector<std::function<void()>>& tasks) {
 // AcadosMpc
 // ================================
 AcadosMpc::AcadosMpc(const Config& cfg) : cfg_(cfg) {
-  // Horizon reference
   P_ref_.assign(cfg_.NP, cfg_.ref_value);
-
-  // initial A,B sequences
   A_seq_.assign(cfg_.NP, cfg_.A_lin);
   Eigen::RowVector3f b_row = Eigen::Map<const Eigen::RowVector3f>(cfg_.B_lin.data());
   B_seq_.assign(cfg_.NP, b_row);
 
-  // Pre-allocate cost matrices
   Q_.setZero(cfg_.n_x * cfg_.NP, cfg_.n_x * cfg_.NP);
   R_.setZero(cfg_.n_u * cfg_.NP, cfg_.n_u * cfg_.NP);
   for (int i = 0; i < cfg_.n_x * cfg_.NP; ++i) Q_(i, i) = cfg_.Q_value;
@@ -213,54 +206,60 @@ float AcadosMpc::read_current_pressure(const SensorSnapshot&) const {
 }
 
 std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micro, float P_macro) {
-    const float Pref = cfg_.ref_value;
-    float err = Pref - P_now;
+  const float Pref = cfg_.ref_value;
+  float err = Pref - P_now;
 
-    const float ku_mi = cfg_.is_positive ? cfg_.pos_ku_micro : cfg_.neg_ku_micro;
-    const float ku_at = cfg_.is_positive ? cfg_.pos_ku_atm   : cfg_.neg_ku_atm;
-    const float ki_mi = cfg_.is_positive ? cfg_.pos_ki_micro : cfg_.neg_ki_micro;
-    const float ki_at = cfg_.is_positive ? cfg_.pos_ki_atm   : cfg_.neg_ki_atm;
+  error_integral_ += err * cfg_.Ts;
 
-    float pi_output;
-    bool needs_pressurizing;
+  const float ku_mi = cfg_.is_positive ? cfg_.pos_ku_micro : cfg_.neg_ku_micro;
+  const float ku_ma = cfg_.is_positive ? cfg_.pos_ku_macro : cfg_.neg_ku_macro;
+  const float ku_at = cfg_.is_positive ? cfg_.pos_ku_atm   : cfg_.neg_ku_atm;
+  const float ki_mi = cfg_.is_positive ? cfg_.pos_ki_micro : cfg_.neg_ki_micro;
+  const float ki_ma = cfg_.is_positive ? cfg_.pos_ki_macro : cfg_.neg_ki_macro;
+  const float ki_at = cfg_.is_positive ? cfg_.pos_ki_atm   : cfg_.neg_ki_atm;
 
-    if ( (cfg_.is_positive && err > 0.f) || (!cfg_.is_positive && err < 0.f) ) {
-        needs_pressurizing = true;
-        const float current_err = cfg_.is_positive ? err : -err;
-        if (cfg_.is_positive) {
-            pi_output = ku_mi * current_err + ki_mi * error_integral_;
-        } else {
-            pi_output = ku_mi * current_err - ki_mi * error_integral_;
-        }
-    } else {
-        needs_pressurizing = false;
-        const float current_err = cfg_.is_positive ? -err : err;
-        pi_output = ku_at * current_err - ki_at * error_integral_;
+  float u_mi = 0.f, u_ma = 0.f, u_at = 0.f;
+
+  if (cfg_.is_positive) { // 양압 챔버
+    if (err > 0.f) { // 가압 시
+      u_mi = ku_mi * err + ki_mi * error_integral_;
+      u_ma = ku_ma * err + ki_ma * error_integral_;
+      u_at = 0.f;
     }
-
-    bool is_saturated = (pi_output >= 100.0f && err > 0.f) || (pi_output <= 0.0f && err < 0.f);
-
-    if (!is_saturated) {
-        error_integral_ += err * cfg_.Ts;
+    else { // 감압 시
+      u_mi = 0.f;
+      u_ma = 0.f;
+      u_at = ku_at * (-err) + ki_at * (-error_integral_);
     }
-
-    float u_mi = 0.f, u_ma = 0.f, u_at = 0.f;
-    if (needs_pressurizing) {
-        u_mi = std::clamp(pi_output, 0.f, 100.f);
-        u_ma = std::clamp(pi_output * cfg_.macro_gain_multiplier, 0.f, 100.f);
-    } else {
-        u_at = std::clamp(pi_output, 0.f, 100.f);
+  } else { // 음압 챔버
+    if (err < 0.f) { // 대기로 감압 시
+      u_mi = 0.f;
+      u_ma = 0.f;
+      u_at = ku_at * (-err) + ki_at * (-error_integral_);
     }
-    
-    last_error_ = err;
-    (void)P_micro; (void)P_macro; 
+    else { // 진공 펌프로 흡입 시
+      u_mi = ku_mi * err + ki_mi * error_integral_;
+      u_ma = ku_ma * err + ki_ma * error_integral_;
+      u_at = 0.f;
+    }
+  }
+  (void)P_micro; (void)P_macro;
 
-    // [수정됨] Narrowing conversion 경고 해결 (static_cast<float> 추가)
-    return {
-        static_cast<float>(u_mi * (555.5 * cfg_.volume_m3 + 0.94)),
-        static_cast<float>(u_ma * (555.5 * cfg_.volume_m3 + 0.94)),
-        static_cast<float>(u_at * (555.5 * cfg_.volume_m3 + 0.94))
-    };
+  float u_mi_clamped = std::clamp(u_mi, 0.f, 100.f);
+  float u_ma_clamped = std::clamp(u_ma, 0.f, 100.f);
+  float u_at_clamped = std::clamp(u_at, 0.f, 100.f);
+
+  if (ki_mi != 0.f && u_mi != u_mi_clamped) {
+      error_integral_ = (u_mi_clamped - ku_mi * err) / ki_mi;
+  }
+  if (ki_ma != 0.f && u_ma != u_ma_clamped) {
+      error_integral_ = (u_ma_clamped - ku_ma * err) / ki_ma;
+  }
+  if (ki_at != 0.f && u_at != u_at_clamped) {
+      error_integral_ = -( (u_at_clamped - ku_at * (-err)) / ki_at );
+  }
+
+  return {u_mi_clamped, u_ma_clamped, u_at_clamped};
 }
 
 void AcadosMpc::build_mpc_qp(const std::vector<float>& A_seq,
@@ -313,26 +312,69 @@ std::array<float,3> AcadosMpc::solve_qp_first_step(const Eigen::MatrixXf& P,
                                                    const Eigen::VectorXf& LL,
                                                    const Eigen::VectorXf& UL)
 {
-  (void)A_con; (void)LL; (void)UL;
-  Eigen::VectorXf u = -P.ldlt().solve(q);
-  std::array<float,3> du3{ u(0), u(1), u(2) };
-  return du3;
+  if (!qp_) {
+      Eigen::VectorXf u = -P.ldlt().solve(q);
+      return {u(0), u(1), u(2)};
+  }
+
+  int Nu = q.size();
+  Eigen::VectorXf solution(Nu);
+  bool success = qp_->solve(P, q, LL, UL, solution);
+
+  if (!success) {
+      return {0.0f, 0.0f, 0.0f}; 
+  }
+
+  return {solution(0), solution(1), solution(2)};
 }
 
 void AcadosMpc::solve(const SensorSnapshot& s, float /*dt_ms*/,
                       std::array<uint16_t, MPC_OUT_DIM>& out3)
 {
-  float P_now = current_P_now_;
+  float P_now   = current_P_now_;
+  float P_micro = current_P_micro_;
+  float P_macro = current_P_macro_;
 
-  // 1. PI 제어기
-  auto u0_arr = compute_input_reference(P_now, current_P_micro_, current_P_macro_);
-  last_u3_ = u0_arr;
+  auto uref_arr = compute_input_reference(P_now, P_micro, P_macro);
+  Eigen::RowVector3f u_ref(uref_arr[0], uref_arr[1], uref_arr[2]);
 
-  // 2. 0~1023 PWM 변환
-  out3[0] = static_cast<uint16_t>( std::round(u0_arr[0] * 10.23f) ); // micro
-  out3[1] = static_cast<uint16_t>( std::round(u0_arr[2] * 10.23f) ); // atm
-  out3[2] = static_cast<uint16_t>( std::round(u0_arr[1] * 10.23f) ); // macro
+  std::fill(P_ref_.begin(), P_ref_.end(), cfg_.ref_value);
+
+  update_linearization(s, cfg_.ref_value, u_ref);
+
+  const int Nu = cfg_.n_u * cfg_.NP;
+  Pmat_.setZero(Nu, Nu);
+  qvec_.setZero(Nu);
+  Acon_.setZero(Nu, Nu);
+  LL_.setZero(Nu);
+  UL_.setZero(Nu);
+
+  build_mpc_qp(A_seq_, B_seq_, P_now, P_ref_, Pmat_, qvec_, Acon_, LL_, UL_);
+
+  for (int i = 0; i < cfg_.NP; ++i) {
+      for (int j = 0; j < 3; ++j) { 
+          int idx = i * 3 + j;
+          float u_current_ref = uref_arr[j]; 
+          
+          LL_(idx) = std::max(-u_current_ref, cfg_.du_min); 
+          UL_(idx) = std::min(100.0f - u_current_ref, cfg_.du_max);
+      }
+  }
+
+  auto du3 = solve_qp_first_step(Pmat_, qvec_, Acon_, LL_, UL_);
+
+  std::array<float,3> u0{
+    std::clamp(uref_arr[0] + du3[0], 0.0f, 100.0f),
+    std::clamp(uref_arr[1] + du3[1], 0.0f, 100.0f),
+    std::clamp(uref_arr[2] + du3[2], 0.0f, 100.0f),
+  };
+  last_u3_ = u0;
+
+  out3[0] = static_cast<uint16_t>( std::round(u0[0] * 10.23f) ); 
+  out3[1] = static_cast<uint16_t>( std::round(u0[2] * 10.23f) ); 
+  out3[2] = static_cast<uint16_t>( std::round(u0[1] * 10.23f) ); 
 }
+
 
 // ================================
 // Controller
@@ -340,13 +382,13 @@ void AcadosMpc::solve(const SensorSnapshot& s, float /*dt_ms*/,
 Controller::Controller(const rclcpp::NodeOptions& opts)
 : rclcpp::Node("pp_controller", opts)
 {
-  // timing / affinity
   period_ms_ = this->declare_parameter<int>("period_ms", 1000 / PWM_RATE_HZ);
   enable_thread_pinning_ = this->declare_parameter<bool>("enable_thread_pinning", true);
   cpu_pins_param_ = this->declare_parameter<std::vector<int64_t>>("cpu_pins", std::vector<int64_t>{0,1,2,3});
-  filter_alpha_ = this->declare_parameter<double>("sensor_filter_alpha", 0.5);
 
-  // ---- Sensor_calibration: per-channel ----
+  // [수정됨] num_positive_channels 파라미터 로드
+  num_positive_channels_ = this->declare_parameter<int>("num_positive_channels", 8);
+
   sensor_.atm_offset = get_param_or<double>(this, "Sensor_calibration.atm_offset", 101.325);
 
   auto load_board = [&](const std::string& base, auto& arr, int expected_len){
@@ -371,13 +413,12 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   pid_pos_index_ = get_param_or<int>(this, "PWM_parameters.pid_pos_index", 18);
   pid_neg_index_ = get_param_or<int>(this, "PWM_parameters.pid_neg_index", 19);
 
-  // MPC_parameters
-  mpc_.NP           = get_param_or<int>(this,    "MPC_parameters.NP", 5);
-  mpc_.n_x          = get_param_or<int>(this,    "MPC_parameters.n_x", 1);
-  mpc_.n_u          = get_param_or<int>(this,    "MPC_parameters.n_u", 3);
-  mpc_.Ts           = get_param_or<double>(this, "MPC_parameters.Ts",  0.01);
-  mpc_.Q_value      = get_param_or<double>(this, "MPC_parameters.Q_values", 10.0);
-  mpc_.R_value      = get_param_or<double>(this, "MPC_parameters.R_values",  1.0);
+  mpc_.NP             = get_param_or<int>(this,    "MPC_parameters.NP", 5);
+  mpc_.n_x            = get_param_or<int>(this,    "MPC_parameters.n_x", 1);
+  mpc_.n_u            = get_param_or<int>(this,    "MPC_parameters.n_u", 3);
+  mpc_.Ts             = get_param_or<double>(this, "MPC_parameters.Ts",  0.01);
+  mpc_.Q_value        = get_param_or<double>(this, "MPC_parameters.Q_values", 10.0);
+  mpc_.R_value        = get_param_or<double>(this, "MPC_parameters.R_values",  1.0);
   mpc_.pos_ku_micro = get_param_or<double>(this, "MPC_parameters.pos_ku_micro", 0.5);
   mpc_.pos_ku_macro = get_param_or<double>(this, "MPC_parameters.pos_ku_macro", 0.5);
   mpc_.pos_ku_atm   = get_param_or<double>(this, "MPC_parameters.pos_ku_atm",   2.0);
@@ -390,13 +431,15 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   mpc_.neg_ki_micro = get_param_or<double>(this, "MPC_parameters.neg_ki_micro", 0.0);
   mpc_.neg_ki_macro = get_param_or<double>(this, "MPC_parameters.neg_ki_macro", 0.0);
   mpc_.neg_ki_atm   = get_param_or<double>(this, "MPC_parameters.neg_ki_atm",   0.0);
-  
-  mpc_.macro_gain_multiplier = get_param_or<double>(this, "MPC_parameters.macro_gain_multiplier", 1.0);
 
-  for (int i = 0; i < MPC_TOTAL; ++i) {
-    const std::string key = "ch" + std::to_string(i) + "_ml";
-    vol_ml_[i] = get_param_or<double>(this, std::string("channel_volume.") + key, 100.0);
+  auto get_ml = [&](const char* key, double def_ml){
+    return get_param_or<double>(this, std::string("channel_volume.")+key, def_ml);
+  };
+  for(int i=0; i<MPC_TOTAL; ++i) {
+      std::string key = "ch" + std::to_string(i) + "_ml";
+      vol_ml_[i] = get_ml(key.c_str(), 100.0);
   }
+
   sys_sensor_print_    = get_param_or<bool>(this, "system_parameters.sensor_print",    true);
   sys_reference_print_ = get_param_or<bool>(this, "system_parameters.reference_print", true);
   sys_pwm_print_       = get_param_or<bool>(this, "system_parameters.pwm_print",       true);
@@ -422,18 +465,14 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   pid_out_min_ = get_param_or<double>(this, "LinePID.out_min", 0.0);
   pid_out_max_ = get_param_or<double>(this, "LinePID.out_max", 100.0);
 
-  // [수정됨] RefTcpClient 설정 로드 (Server 아님)
-  ref_client_cfg_.enable = get_param_or<bool>(this,  "RefTcp.enable",       false);
-  ref_client_cfg_.host   = get_param_or<std::string>(this, "RefTcp.host", "169.254.46.254");
-  ref_client_cfg_.port   = get_param_or<int>(this,   "RefTcp.port",         2272);
-  ref_client_cfg_.expect_n = get_param_or<int>(this, "RefTcp.expect_n",     MPC_TOTAL);
-  ref_client_cfg_.scale    = get_param_or<double>(this,"RefTcp.scale",      0.01);
+  ref_client_cfg_.enable        = get_param_or<bool>(this,  "RefTcp.enable",        false);
+  ref_client_cfg_.host = get_param_or<std::string>(this, "RefTcp.host", "169.254.46.254");
+  ref_client_cfg_.port          = get_param_or<int>(this,   "RefTcp.port",          2272);
+  ref_client_cfg_.expect_n      = get_param_or<int>(this,   "RefTcp.expect_n",      MPC_TOTAL);
+  ref_client_cfg_.scale         = get_param_or<double>(this,"RefTcp.scale",         0.01);
   
   log_channel_id_ = this->declare_parameter<int>("log_channel_id", -1);
 
-  mpc_ref_kpa_.fill(101.325);
-
-  // [수정됨] RefTcpClient 생성 (Server 아님)
   if (ref_client_cfg_.enable) {
     ref_client_ = std::make_unique<RefTcpClient>(
       ref_client_cfg_,
@@ -471,14 +510,14 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
       log_file_ << "tick,reference_kpa,sensed_kpa\n";
     } else {
       RCLCPP_ERROR(get_logger(), "Failed to open log file mpc_log.csv");
-      log_channel_id_ = -1;
+      log_channel_id_ = -1; 
     }
   }
 
   timer_ = create_wall_timer(std::chrono::milliseconds(period_ms_), std::bind(&Controller::on_timer, this));
 
   RCLCPP_INFO(get_logger(),
-  "RefTcpClient: enable=%d host=%s port=%d expect_n=%d scale=%.3f",
+  "RefTcp: enable=%d host=%s port=%d expect_n=%d scale=%.3f",
   (int)ref_client_cfg_.enable, ref_client_cfg_.host.c_str(),
   ref_client_cfg_.port, ref_client_cfg_.expect_n, ref_client_cfg_.scale);
   
@@ -528,7 +567,9 @@ void Controller::build_mpcs() {
       cfg.A_lin = 1.0f;
       cfg.B_lin = {1.0f, 0.5f, -0.8f};
 
-      cfg.is_positive   = (gid < 6);
+      // [수정됨] Config에서 설정한 num_positive_channels_ 변수 사용
+      cfg.is_positive   = (gid < num_positive_channels_); 
+      
       cfg.pos_ku_micro  = (float)mpc_.pos_ku_micro;
       cfg.pos_ku_macro  = (float)mpc_.pos_ku_macro;
       cfg.pos_ku_atm    = (float)mpc_.pos_ku_atm;
@@ -543,18 +584,19 @@ void Controller::build_mpcs() {
       cfg.neg_ki_macro  = (float)mpc_.neg_ki_macro;
       cfg.neg_ki_atm    = (float)mpc_.neg_ki_atm;
 
-      cfg.ref_value = 101.325f;
-      cfg.du_min = -50.f; cfg.du_max = +50.f;
+      cfg.ref_value = 0.0f;
+      cfg.du_min = -30.f; cfg.du_max = +30.f;
       cfg.u_abs_min = 0.f; cfg.u_abs_max = 100.f;
 
-      if (gid >= 0 && gid < MPC_TOTAL) {
-        cfg.volume_m3 = ml_to_m3(vol_ml_[gid]);
-      } else {
-        cfg.volume_m3 = ml_to_m3(100.0); 
-      }
-      cfg.macro_gain_multiplier = (float)mpc_.macro_gain_multiplier;
+      cfg.volume_m3 = ml_to_m3(vol_ml_[gid]);
+      
+      auto mpc_obj = std::make_unique<AcadosMpc>(cfg);
+      int nv = cfg.n_u * cfg.NP; 
+      int nc = 0; 
+      auto qp_solver = std::make_shared<QP>(nv, nc);
+      mpc_obj->set_qp_solver(qp_solver);
 
-      mpcs_.emplace_back(std::make_unique<AcadosMpc>(cfg));
+      mpcs_.emplace_back(std::move(mpc_obj));
   }
 
   RCLCPP_INFO(get_logger(), "Initialized %zu MPC controllers based on active_mpc_channels parameter.", mpcs_.size());
@@ -585,39 +627,34 @@ void Controller::on_timer() {
     snap.b2 = sensors_b2_;
   }
 
-  // 1. 원본(raw) 압력 값을 kPa 단위로 계산
-  std::array<double, ANALOG_B0> raw_kpa_b0;
-  std::array<double, ANALOG_B1> raw_kpa_b1;
-  std::array<double, ANALOG_B2> raw_kpa_b2;
-  for(int i=0; i<ANALOG_B0; ++i) raw_kpa_b0[i] = sensor_.kpa_b0(i, snap.b0[i]);
-  for(int i=0; i<ANALOG_B1; ++i) raw_kpa_b1[i] = sensor_.kpa_b1(i, snap.b1[i]);
-  for(int i=0; i<ANALOG_B2; ++i) raw_kpa_b2[i] = sensor_.kpa_b2(i, snap.b2[i]);
+  {
+    std_msgs::msg::Float64MultiArray msg_b0, msg_b1, msg_b2;
+    msg_b0.data.reserve(ANALOG_B0);
+    msg_b1.data.reserve(ANALOG_B1);
+    msg_b2.data.reserve(ANALOG_B2);
 
-  // 2. 필터 적용
-  if (!is_filter_initialized_) {
-    filtered_kpa_b0_ = raw_kpa_b0;
-    filtered_kpa_b1_ = raw_kpa_b1;
-    filtered_kpa_b2_ = raw_kpa_b2;
-    is_filter_initialized_ = true;
-  } else {
-    for(int i=0; i<ANALOG_B0; ++i) filtered_kpa_b0_[i] = filter_alpha_ * raw_kpa_b0[i] + (1.0 - filter_alpha_) * filtered_kpa_b0_[i];
-    for(int i=0; i<ANALOG_B1; ++i) filtered_kpa_b1_[i] = filter_alpha_ * raw_kpa_b1[i] + (1.0 - filter_alpha_) * filtered_kpa_b1_[i];
-    for(int i=0; i<ANALOG_B2; ++i) filtered_kpa_b2_[i] = filter_alpha_ * raw_kpa_b2[i] + (1.0 - filter_alpha_) * filtered_kpa_b2_[i];
+    for(int i=0; i<ANALOG_B0; ++i) msg_b0.data.push_back(sensor_.kpa_b0(i, snap.b0[i]));
+    for(int i=0; i<ANALOG_B1; ++i) msg_b1.data.push_back(sensor_.kpa_b1(i, snap.b1[i]));
+    for(int i=0; i<ANALOG_B2; ++i) msg_b2.data.push_back(sensor_.kpa_b2(i, snap.b2[i]));
+
+    pub_kpa_b0_->publish(msg_b0);
+    pub_kpa_b1_->publish(msg_b1);
+    pub_kpa_b2_->publish(msg_b2);
   }
 
-  // 3. 디버깅용 퍼블리시
-  std_msgs::msg::Float64MultiArray msg_b0, msg_b1, msg_b2;
-  msg_b0.data.assign(filtered_kpa_b0_.begin(), filtered_kpa_b0_.end());
-  msg_b1.data.assign(filtered_kpa_b1_.begin(), filtered_kpa_b1_.end());
-  msg_b2.data.assign(filtered_kpa_b2_.begin(), filtered_kpa_b2_.end());
-  pub_kpa_b0_->publish(msg_b0);
-  pub_kpa_b1_->publish(msg_b1);
-  pub_kpa_b2_->publish(msg_b2);
-  
-  // 4. 제어
-  const double P_line_pos_kPa   = filtered_kpa_b2_[4];
-  const double P_line_neg_kPa   = filtered_kpa_b2_[5];
-  const double P_line_macro_kPa = filtered_kpa_b2_[6];
+  auto get_u16_b0 = [&](int idx)->uint16_t {
+    return (idx >= 0 && idx < ANALOG_B0) ? snap.b0[(size_t)idx] : 0;
+  };
+  auto get_u16_b1 = [&](int idx)->uint16_t {
+    return (idx >= 0 && idx < ANALOG_B1) ? snap.b1[(size_t)idx] : 0;
+  };
+  auto get_u16_b2 = [&](int idx)->uint16_t {
+    return (idx >= 0 && idx < ANALOG_B2) ? snap.b2[(size_t)idx] : 0;
+  };
+
+  const double P_line_pos_kPa   = sensor_.kpa_b2(4, get_u16_b2(4));
+  const double P_line_neg_kPa   = sensor_.kpa_b2(5, get_u16_b2(5));
+  const double P_line_macro_kPa = sensor_.kpa_b2(6, get_u16_b2(6));
   const double P_atm_kPa        = sensor_.kpa_atm();
 
   if (macro_switch_pwm_index_ >= 0 && macro_switch_pwm_index_ < PWM_MAX_B2) {
@@ -646,19 +683,22 @@ void Controller::on_timer() {
     tasks.emplace_back([this,
                         &mpc,
                         snap,
-                        filtered_kpa_b0 = this->filtered_kpa_b0_,
-                        filtered_kpa_b1 = this->filtered_kpa_b1_,
-                        filtered_kpa_b2 = this->filtered_kpa_b2_,
+                        get_u16_b0, get_u16_b1, get_u16_b2,
                         P_line_pos_kPa, P_line_neg_kPa, P_line_macro_kPa, P_atm_kPa,
                         ref_snapshot]() {
       const int b   = mpc->cfg().board_index;
       const int ref = mpc->cfg().reference_channel;
 
+      uint16_t raw = 0;
+      if      (b == 0) raw = get_u16_b0(ref);
+      else if (b == 1) raw = get_u16_b1(ref);
+      else             raw = get_u16_b2(ref);
+
       double P_state_kPa = 101.325;
-      if      (b == 0) P_state_kPa = filtered_kpa_b0[ref];
-      else if (b == 1) P_state_kPa = filtered_kpa_b1[ref];
-      else             P_state_kPa = filtered_kpa_b2[ref];
-      
+      if      (b == 0) P_state_kPa = sensor_.kpa_b0(ref, raw);
+      else if (b == 1) P_state_kPa = sensor_.kpa_b1(ref, raw);
+      else             P_state_kPa = sensor_.kpa_b2(ref, raw);
+
       const bool pos_side = mpc->cfg().is_positive;
 
       mpc->current_P_atm_   = static_cast<float>(P_atm_kPa);
@@ -669,8 +709,6 @@ void Controller::on_timer() {
       const int gid = mpc->cfg().global_id;
       float ref_kpa = 0.f;
       if (gid >= 0 && gid < MPC_TOTAL) ref_kpa = (float)ref_snapshot[(size_t)gid];
-      
-      // [수정됨] 레퍼런스 변경 시 초기화 로직은 헤더 파일의 AcadosMpc::set_ref_value에 있습니다.
       mpc->set_ref_value(ref_kpa);
 
       if (gid == log_channel_id_ && log_file_.is_open()) {
@@ -684,7 +722,7 @@ void Controller::on_timer() {
       const int bidx = mpc->cfg().board_index;
       if      (bidx == 0) { zoh_b0_[off+0] = u3[0]; zoh_b0_[off+1] = u3[1]; zoh_b0_[off+2] = u3[2]; }
       else if (bidx == 1) { zoh_b1_[off+0] = u3[0]; zoh_b1_[off+1] = u3[1]; zoh_b1_[off+2] = u3[2]; }
-      else                { zoh_b2_[off+0] = u3[0]; zoh_b2_[off+1] = u3[1]; zoh_b2_[off+2] = u3[2]; }
+      else                 { zoh_b2_[off+0] = u3[0]; zoh_b2_[off+1] = u3[1]; zoh_b2_[off+2] = u3[2]; }
     });
   }
 
