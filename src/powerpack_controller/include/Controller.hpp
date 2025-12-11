@@ -16,6 +16,23 @@
 #include <memory>
 #include <atomic>
 #include <fstream> // [수정됨] 파일 출력을 위해 추가
+#include <sstream> // 출력을 위해 추가
+#include <iomanip> // 출력을 위해 추가
+#include <cstring> // std::memcpy를 위해 추가
+#include <string>  // [추가] RefTcpClient가 사용
+
+// [추가] RefTcpClient가 사용하는 리눅스 전용 헤더
+#ifdef __linux__
+  #include <pthread.h>
+  #include <sys/socket.h>
+  #include <netinet/in.h>
+  #include <netinet/tcp.h>
+  #include <arpa/inet.h>
+  #include <fcntl.h>
+  #include <unistd.h>
+  #include <errno.h>
+#endif
+
 
 // ================================
 // Fixed sizes for this project
@@ -157,24 +174,130 @@ struct SensorCalib {
   inline double kpa_b2(int idx, uint16_t raw) const { if (idx < 0 || idx >= (int)b2.size()) return this->kpa_atm(); const auto& c = b2[(size_t)idx]; return (double(raw) - c.offset) * c.gain + this->kpa_atm(); }
 };
 
+
 // ================================
-// Lightweight TCP server (inline)
+// RefTcpClient (신규 추가, RefTcpServer 대체)
+// 파이썬 클라이언트(tcp_test.py)와 동일한 역할 (레퍼런스 수신용)
+// [수정됨] .cpp 파일에서 .hpp 파일로 이동
 // ================================
-struct RefTcpServer {
-  struct Config { bool enable{false}; std::string bind_address{"0.0.0.0"}; int port{15000}; int expect_n{MPC_TOTAL}; double scale{0.01}; };
-  using Callback = std::function<void(const std::array<double, MPC_TOTAL>&)>;
-  explicit RefTcpServer(const Config& cfg, Callback cb);
-  ~RefTcpServer();
-private:
-  void run_();
-  Config   cfg_;
-  Callback cb_;
-  std::thread th_;
-  std::atomic<bool> stop_{false};
+class RefTcpClient {
+public:
+    struct Config {
+        bool enable = false; // 👈 [수정] 이 줄을 추가하세요.
+        std::string host = "169.254.46.254";
+        int port = 2272;
+        int expect_n = 12; // 수신할 정수 개수
+        double scale = 0.01; // 스케일 (config.yaml에서 로드)
+    };
+
+    // 12개의 double 값을 전달하는 콜백
+    using Callback = std::function<void(const std::array<double, 12>&)>;
+
+    RefTcpClient(const Config& cfg, Callback cb)
+    : cfg_(cfg), cb_(std::move(cb)) {
 #ifdef __linux__
-  int listen_fd_{-1};
-  int client_fd_{-1};
+        th_ = std::thread([this](){ run_(); });
+#else
+        (void)cfg_; (void)cb_;
 #endif
+    }
+
+    ~RefTcpClient() {
+        stop_.store(true);
+#ifdef __linux__
+        if (client_fd_ >= 0) ::shutdown(client_fd_, SHUT_RDWR);
+#endif
+        if (th_.joinable()) th_.join();
+    }
+
+private:
+    void run_() {
+#ifndef __linux__
+        return;
+#else
+        // 파이썬 코드의 설정과 일치
+        const size_t NUM_INTEGERS = (size_t)cfg_.expect_n;      // 12
+        const size_t BYTES_PER_INT = sizeof(uint16_t);      // 2
+        const size_t BUFFER_SIZE = NUM_INTEGERS * BYTES_PER_INT; // 24
+        
+        std::vector<char> buffer(BUFFER_SIZE); // 24바이트 수신 버퍼
+        std::array<double, 12> out_values; // 콜백에 전달할 배열 (MPC_TOTAL=12)
+
+        while (!stop_.load()) {
+            client_fd_ = -1; // 루프 시작 시 소켓 초기화
+            try {
+                client_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+                if (client_fd_ < 0) throw std::runtime_error("Socket creation failed");
+
+                sockaddr_in server_addr{};
+                server_addr.sin_family = AF_INET;
+                server_addr.sin_port = htons((uint16_t)cfg_.port);
+                
+                if (::inet_pton(AF_INET, cfg_.host.c_str(), &server_addr.sin_addr) <= 0) {
+                    throw std::runtime_error("Invalid address/ Address not supported");
+                }
+
+                RCLCPP_INFO(rclcpp::get_logger("RefTcpClient"), "Connecting to reference server %s:%d...", cfg_.host.c_str(), cfg_.port);
+
+                // 1. [연결] s.connect()
+                if (::connect(client_fd_, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+                    throw std::runtime_error("Connection Failed");
+                }
+                
+                RCLCPP_INFO(rclcpp::get_logger("RefTcpClient"), "Reference server connected.");
+
+                // 2. [수신] s.recv() 루프
+                while (!stop_.load()) {
+                    size_t total_recd = 0;
+                    while (total_recd < BUFFER_SIZE && !stop_.load()) {
+                        ssize_t n = ::recv(client_fd_, buffer.data() + total_recd, BUFFER_SIZE - total_recd, 0);
+                        if (n == 0) throw std::runtime_error("Server disconnected");
+                        if (n < 0) {
+                            if (errno == EINTR) continue;
+                            throw std::runtime_error(std::string("Recv error: ") + strerror(errno));
+                        }
+                        total_recd += (size_t)n;
+                    }
+
+                    // 3. 24바이트 수신 완료 -> 파싱
+                    if (total_recd == BUFFER_SIZE) {
+                        const char* ptr = buffer.data();
+                        for (size_t i = 0; i < NUM_INTEGERS; ++i) {
+                            uint16_t net_val; // Big-Endian
+                            std::memcpy(&net_val, ptr, BYTES_PER_INT);
+                            ptr += BYTES_PER_INT;
+                            uint16_t host_val = ntohs(net_val); // Big-Endian -> Host
+                            
+                            // C++ 서버의 스케일 적용 (기존 RefTcpServer 로직 동일)
+                            out_values[i] = static_cast<double>(host_val) * cfg_.scale;
+                        }
+                        // 4. 콜백 함수 호출 (Controller의 mpc_ref_kpa_ 업데이트)
+                        cb_(out_values);
+                    }
+                } // end recv loop
+
+            } catch (const std::exception& e) {
+                RCLCPP_ERROR(rclcpp::get_logger("RefTcpClient"), "%s", e.what());
+                if (client_fd_ >= 0) {
+                    ::close(client_fd_);
+                    client_fd_ = -1;
+                }
+                if (!stop_.load()) {
+                    RCLCPP_INFO(rclcpp::get_logger("RefTcpClient"), "Reconnecting in 5 seconds...");
+                    std::this_thread::sleep_for(std::chrono::seconds(5)); // [수정] 5s -> std::chrono::seconds(5)
+                }
+            }
+        } // end main loop
+
+        if (client_fd_ >= 0) ::close(client_fd_);
+#endif
+    }
+
+    Config cfg_;
+    Callback cb_;
+    std::thread th_;
+    std::atomic<bool> stop_{false};
+    int client_fd_ = -1;
 };
 
 
@@ -195,6 +318,7 @@ private:
   void inner_loop_1khz(const SensorSnapshot& s, float dt_ms);
   inline uint16_t clamp_pwm(int v) const { return static_cast<uint16_t>( std::min(std::max(v, PWM_CLAMP_MIN), PWM_CLAMP_MAX) ); }
   void publish_cmds();
+  
 
 private:
   int period_ms_{1000 / PWM_RATE_HZ};
@@ -245,8 +369,8 @@ private:
   bool sys_reference_print_{true};
   bool sys_pwm_print_{true};
   bool sys_valve_operate_{false};
-  RefTcpServer::Config ref_tcp_cfg_{};
-  std::unique_ptr<RefTcpServer> ref_server_;
+  RefTcpClient::Config ref_client_cfg_;
+  std::unique_ptr<RefTcpClient> ref_client_;
   std::mutex mpc_ref_mtx_;
   std::array<double, MPC_TOTAL> mpc_ref_kpa_{};
   struct PidGains { double kp{0.5}, ki{0.0}, kd{0.0}, ref{150.0}; };
