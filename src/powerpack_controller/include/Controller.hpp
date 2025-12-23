@@ -147,6 +147,11 @@ public:
     float volume_m3{1.0e-5f};
     float macro_gain_multiplier{1.0f};
     float last_ref_value_ = 101.325f;
+    float ejector_k = 0.005f;       
+    float ejector_p_limit = 11.325f; 
+    float leakage_u_pos = 0.0f; 
+    float leakage_u_neg = 0.0f; 
+
   };
 
   explicit AcadosMpc(const Config& cfg);
@@ -364,6 +369,10 @@ private:
     double pos_ki_micro{0.0}, pos_ki_macro{0.0}, pos_ki_atm{0.0};
     double neg_ki_micro{0.0}, neg_ki_macro{0.0}, neg_ki_atm{0.0};
     double macro_gain_multiplier{1.0};
+    double ejector_k{0.005};       
+    double ejector_p_limit{11.325};
+    double leakage_u_pos{0.0};
+    double leakage_u_neg{0.0};
   } mpc_;
   
   std::array<double, MPC_TOTAL> vol_ml_;

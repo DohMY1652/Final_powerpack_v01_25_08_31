@@ -85,6 +85,12 @@ pp_controller:
       
       macro_gain_multiplier: 1.0
 
+      ejector_k: 0.005         
+      ejector_p_limit: 11.325  
+      
+      leakage_u_pos: 0.2
+      leakage_u_neg: 0.2
+
     # # test volume
     # channel_volume:
     #   ch0_ml: 10

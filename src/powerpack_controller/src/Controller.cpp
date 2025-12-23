@@ -145,8 +145,8 @@ void AcadosMpc::update_linearization(const SensorSnapshot& s,
         round_input = k1 * root;
         const double safe_root = std::max(1e-9, root);
         // 편미분 공식 적용
-        round_pin   = k0 * root + (k0 * Pin + k1 * input - k2) / safe_root * (4.0 * (Pin - Pout));
-        round_pout  = k0 * root + (k0 * Pin + k1 * input - k2) / safe_root * (-2.0 * Pin);
+        round_pin   = k0 * root + (k0 * Pin + k1 * input - k2) / (2.0 * safe_root) * (4.0 * Pin - 2.0 * Pout);
+        round_pout  = (k0 * Pin + k1 * input - k2) / (2 * safe_root) * (-2.0 * Pin);
       }
     }
 
@@ -158,9 +158,59 @@ void AcadosMpc::update_linearization(const SensorSnapshot& s,
     return std::array<double,3>{round_input, round_pin, round_pout};
   };
 
+  auto ejector_calc_rounds = [&](double input, double P_chamber)
+  {
+    // [파라미터 설정] 이젝터 특성에 맞춰 튜닝 필요
+    const double k_ejector = (double)cfg_.ejector_k; 
+    const double P_limit   = (double)cfg_.ejector_p_limit;
+
+    // 입력값 포화 (0~100)
+    double u = std::clamp(input, 0.0, 100.0);
+    
+    // 미분값 초기화
+    double round_input = 0.0;
+    double round_pin   = 0.0; 
+    double round_pout  = 0.0; // 외부 진공압 영향 없음 -> 0 고정
+
+    // 유효 압력차 계산 (챔버압이 한계압보다 높아야 흡입 가능)
+    double delta_P = P_chamber - P_limit;
+
+    if (delta_P > 0.0 && u > 0.0) {
+        // 제곱근 항 계산
+        double root = std::sqrt(delta_P);
+        
+        // 1. 유량 식: Q = k * u * sqrt(P - P_lim)
+        // (필요 시 flow_rate 변수에 저장하여 디버깅 가능)
+        // double flow_rate = k_ejector * u * root;
+
+        // 2. 편미분 계산
+        
+        // dQ/du = k * sqrt(P - P_lim)
+        round_input = k_ejector * root;
+
+        // dQ/dP = k * u * (1 / (2 * sqrt(P - P_lim)))
+        // 수치 안정성: 분모가 0에 가까워지면 미분값이 폭발하므로 최소값 방어
+        double safe_root = std::max(1e-4, root); 
+        round_pin = (k_ejector * u) / (2.0 * safe_root);
+    }
+
+    // [단위 변환] (LPM or kg/s) -> (kPa/s or Pa/s)
+    // 기존 calc_rounds와 동일한 스케일링 적용
+    const double scale = (Rgas * TempK / Volume) * lpm2kgps;
+    
+    round_input *= scale;
+    round_pin   *= scale;
+    // round_pout은 0이므로 scale 곱해도 0
+
+    // 반환 순서: { d/du, d/dP_chamber(Pin), d/dP_src(Pout) }
+    return std::array<double,3>{round_input, round_pin, round_pout};
+  };
+
   const double u_mi = std::clamp((double)u_ref(0), 0.0, 100.0);
   const double u_ma = std::clamp((double)u_ref(1), 0.0, 100.0);
   const double u_at = std::clamp((double)u_ref(2), 0.0, 100.0);
+  const double leak_u_pos = (double)cfg_.leakage_u_pos;
+  const double leak_u_neg = (double)cfg_.leakage_u_neg;
 
   double A_scalar = 0.0;
   Eigen::RowVector3f B_row; B_row.setZero();
@@ -175,6 +225,7 @@ void AcadosMpc::update_linearization(const SensorSnapshot& s,
     
     // Discharge: Chamber(High) -> Atm(Low)
     auto at = calc_rounds(u_at, P_now,   P_atm);
+    auto lk = calc_rounds(leak_u_pos, P_now, P_atm);
 
     ma[0] *= m_gain; ma[1] *= m_gain; ma[2] *= m_gain;
 
@@ -185,7 +236,7 @@ void AcadosMpc::update_linearization(const SensorSnapshot& s,
     // ma flow adds pressure: contributes ma[2]
     // at flow removes pressure: contributes -at[1] (d/dPin term relative to P_now)
     
-    const double tmp_A = mi[2] + ma[2] - at[1];
+    const double tmp_A = mi[2] + ma[2] - at[1]- lk[1];
     const double b0 =  mi[0];
     const double b1 =  ma[0];
     const double b2 = -at[0];
@@ -201,7 +252,8 @@ void AcadosMpc::update_linearization(const SensorSnapshot& s,
 
     // Suction to Vacuum: P_now > P_micro/macro (Vacuum Line)
     auto mi = calc_rounds(u_mi, P_now,   P_micro);
-    auto ma = calc_rounds(u_ma, P_now,   11.325);
+    auto ma = ejector_calc_rounds(u_ma, P_now);
+    auto lk = calc_rounds(leak_u_neg, P_atm, P_now);
 
     ma[0] *= m_gain; ma[1] *= m_gain; ma[2] *= m_gain;
 
@@ -209,7 +261,7 @@ void AcadosMpc::update_linearization(const SensorSnapshot& s,
     // Win (from Atm): contributes at[2] (d/dPout relative to P_now)
     // Wout (to Vacuum): contributes -mi[1] (d/dPin relative to P_now) - ma[1]
     
-    const double tmp_A = at[2] - mi[1] - ma[1];
+    const double tmp_A = at[2] - mi[1] - ma[1] + lk[2];
     
     // B matrix: effects of inputs
     // u_mi (Vacuum): removes mass -> negative pressure change
@@ -249,6 +301,12 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
   const float Pref = cfg_.ref_value;
   float err = Pref - P_now;
 
+  // [추가됨] 에러 부호 변경 시 적분항 리셋 (Anti-windup on Zero Crossing)
+  // 설명: 현재 에러와 누적된 적분값의 부호가 다르면, 제어 방향이 바뀐 것이므로 적분항 초기화
+  if ((err > 0.0f && error_integral_ < 0.0f) || (err < 0.0f && error_integral_ > 0.0f)) {
+      error_integral_ = 0.0f;
+  }
+
   error_integral_ += err * cfg_.Ts;
 
   const float ku_mi = cfg_.is_positive ? cfg_.pos_ku_micro : cfg_.neg_ku_micro;
@@ -269,6 +327,7 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
     else { // 감압 시
       u_mi = 0.f;
       u_ma = 0.f;
+      // 감압 시에는 에러가 음수이므로, 제어 입력은 양수가 되도록 부호 반전
       u_at = ku_at * (-err) + ki_at * (-error_integral_);
     }
   } else { // 음압 챔버
@@ -289,6 +348,7 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
   float u_ma_clamped = std::clamp(u_ma, 0.f, 100.f);
   float u_at_clamped = std::clamp(u_at, 0.f, 100.f);
 
+  // [기존 코드 유지] Back-calculation Anti-windup (출력 포화 시 적분항 감쇄)
   if (ki_mi != 0.f && u_mi != u_mi_clamped) {
       error_integral_ = (u_mi_clamped - ku_mi * (err > 0 ? err : -err)) / ki_mi;
   }
@@ -473,6 +533,10 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   mpc_.neg_ki_macro = get_param_or<double>(this, "MPC_parameters.neg_ki_macro", 0.0);
   mpc_.neg_ki_atm   = get_param_or<double>(this, "MPC_parameters.neg_ki_atm",   0.0);
   mpc_.macro_gain_multiplier = get_param_or<double>(this, "MPC_parameters.macro_gain_multiplier", 1.0);
+  mpc_.ejector_k       = get_param_or<double>(this, "MPC_parameters.ejector_k", 0.005);
+  mpc_.ejector_p_limit = get_param_or<double>(this, "MPC_parameters.ejector_p_limit", 11.325);
+  mpc_.leakage_u_pos = get_param_or<double>(this, "MPC_parameters.leakage_u_pos", 0.0);
+  mpc_.leakage_u_neg = get_param_or<double>(this, "MPC_parameters.leakage_u_neg", 0.0);
 
   auto get_ml = [&](const char* key, double def_ml){
     return get_param_or<double>(this, std::string("channel_volume.")+key, def_ml);
@@ -634,6 +698,12 @@ void Controller::build_mpcs() {
 
       cfg.volume_m3 = ml_to_m3(vol_ml_[gid]);
       cfg.macro_gain_multiplier = (float)mpc_.macro_gain_multiplier;
+
+      cfg.ejector_k       = (float)mpc_.ejector_k;
+      cfg.ejector_p_limit = (float)mpc_.ejector_p_limit;
+
+      cfg.leakage_u_pos = (float)mpc_.leakage_u_pos;
+      cfg.leakage_u_neg = (float)mpc_.leakage_u_neg;
       
       auto mpc_obj = std::make_unique<AcadosMpc>(cfg);
       int nv = cfg.n_u * cfg.NP; 
