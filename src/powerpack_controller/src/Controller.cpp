@@ -107,10 +107,13 @@ void AcadosMpc::update_linearization(const SensorSnapshot& s,
                                      const Eigen::RowVector3f& u_ref)
 {
   (void)s;
-  const float P_now   = current_P_now_-101.325;
-  const float P_micro = current_P_micro_-101.325;
-  const float P_macro = current_P_macro_-101.325;
-  const float P_atm   = current_P_atm_-101.325;
+  // [수정됨] 절대 압력(Absolute Pressure) 사용
+  // 기존: const float P_now = current_P_now_ - 101.325; (음수 발생 가능)
+  // 변경: 절대압 그대로 사용 (항상 양수 -> sqrt 계산 가능)
+  const float P_now   = current_P_now_;
+  const float P_micro = current_P_micro_;
+  const float P_macro = current_P_macro_;
+  const float P_atm   = current_P_atm_; // 보통 101.325
 
   const double k0 = 0.0002181;
   const double k1 = 0.007379;
@@ -121,6 +124,7 @@ void AcadosMpc::update_linearization(const SensorSnapshot& s,
   const double TempK    = 293.15;
   const double Volume   = std::max(1e-12, (double)cfg_.volume_m3);
 
+  // Flow physics model usually requires Absolute Pressure for density estimation
   auto calc_rounds = [&](double input, double Pin, double Pout)
   {
     if (input >= 100.0) input = 100.0;
@@ -129,6 +133,8 @@ void AcadosMpc::update_linearization(const SensorSnapshot& s,
     double flow_rate = 0.0;
     double round_input = 0.0, round_pin = 0.0, round_pout = 0.0;
 
+    // Pin이 Pout보다 커야 유량이 흐름 (압력 차이)
+    // Pin은 절대압이므로 항상 양수여야 함 -> sqrt 내부가 안전해짐
     if (Pin - Pout >= 0.0) {
       const double root = std::sqrt(std::max(0.0, 2.0 * (Pin - Pout) * Pin));
       flow_rate = (k0 * Pin + k1 * input - k2) * root;
@@ -138,6 +144,7 @@ void AcadosMpc::update_linearization(const SensorSnapshot& s,
       } else if (flow_rate > 0.0) {
         round_input = k1 * root;
         const double safe_root = std::max(1e-9, root);
+        // 편미분 공식 적용
         round_pin   = k0 * root + (k0 * Pin + k1 * input - k2) / safe_root * (4.0 * (Pin - Pout));
         round_pout  = k0 * root + (k0 * Pin + k1 * input - k2) / safe_root * (-2.0 * Pin);
       }
@@ -158,11 +165,26 @@ void AcadosMpc::update_linearization(const SensorSnapshot& s,
   double A_scalar = 0.0;
   Eigen::RowVector3f B_row; B_row.setZero();
 
+  const double m_gain = (double)cfg_.macro_gain_multiplier;
+
   if (cfg_.is_positive) {
+    // Positive: Source(High) -> Chamber(Low) -> Atm(Lowest)
+    // P_micro/macro (Supply) > P_now (Chamber)
     auto mi = calc_rounds(u_mi, P_micro, P_now);
     auto ma = calc_rounds(u_ma, P_macro, P_now);
+    
+    // Discharge: Chamber(High) -> Atm(Low)
     auto at = calc_rounds(u_at, P_now,   P_atm);
 
+    ma[0] *= m_gain; ma[1] *= m_gain; ma[2] *= m_gain;
+
+    // dP/dt = (Win - Wout) / V
+    // A = d(Win)/dP + d(-Wout)/dP = mi_pin*0 + mi_pout + ma_pout - at_pin
+    // Note: calc_rounds returns {d/du, d/dPin, d/dPout}
+    // mi flow adds pressure: contributes mi[2] (d/dPout term relative to P_now)
+    // ma flow adds pressure: contributes ma[2]
+    // at flow removes pressure: contributes -at[1] (d/dPin term relative to P_now)
+    
     const double tmp_A = mi[2] + ma[2] - at[1];
     const double b0 =  mi[0];
     const double b1 =  ma[0];
@@ -170,12 +192,30 @@ void AcadosMpc::update_linearization(const SensorSnapshot& s,
 
     A_scalar = (float)tmp_A;
     B_row << (float)b0, (float)b1, (float)b2;
+
   } else {
-    auto mi = calc_rounds(u_mi, P_now,   P_micro);
-    auto ma = calc_rounds(u_ma, P_now,   11.325);
+    // Negative: Atm(High) -> Chamber(Low) -> Vacuum(Lowest)
+    
+    // Intake from Atm: Atm > P_now
     auto at = calc_rounds(u_at, P_atm,   P_now);
 
-    const double tmp_A = - ( mi[2] + ma[2] - at[1] );
+    // Suction to Vacuum: P_now > P_micro/macro (Vacuum Line)
+    auto mi = calc_rounds(u_mi, P_now,   P_micro);
+    auto ma = calc_rounds(u_ma, P_now,   11.325);
+
+    ma[0] *= m_gain; ma[1] *= m_gain; ma[2] *= m_gain;
+
+    // dP/dt = (Win - Wout) / V
+    // Win (from Atm): contributes at[2] (d/dPout relative to P_now)
+    // Wout (to Vacuum): contributes -mi[1] (d/dPin relative to P_now) - ma[1]
+    
+    const double tmp_A = at[2] - mi[1] - ma[1];
+    
+    // B matrix: effects of inputs
+    // u_mi (Vacuum): removes mass -> negative pressure change
+    // u_ma (Vacuum): removes mass -> negative pressure change
+    // u_at (Atm): adds mass -> positive pressure change
+    
     const double b0 = -mi[0];
     const double b1 = -ma[0];
     const double b2 =  at[0];
@@ -232,15 +272,15 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
       u_at = ku_at * (-err) + ki_at * (-error_integral_);
     }
   } else { // 음압 챔버
-    if (err < 0.f) { // 대기로 감압 시
+    if (err < 0.f) { // 진공 흡입 필요 (Target < P_now)
+      u_mi = ku_mi * (-err) + ki_mi * (-error_integral_);
+      u_ma = ku_ma * (-err) + ki_ma * (-error_integral_);
+      u_at = 0.f;
+    }
+    else { // 대기 개방 필요 (Target > P_now)
       u_mi = 0.f;
       u_ma = 0.f;
-      u_at = ku_at * (-err) + ki_at * (-error_integral_);
-    }
-    else { // 진공 펌프로 흡입 시
-      u_mi = ku_mi * err + ki_mi * error_integral_;
-      u_ma = ku_ma * err + ki_ma * error_integral_;
-      u_at = 0.f;
+      u_at = ku_at * err + ki_at * error_integral_; 
     }
   }
   (void)P_micro; (void)P_macro;
@@ -250,13 +290,15 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
   float u_at_clamped = std::clamp(u_at, 0.f, 100.f);
 
   if (ki_mi != 0.f && u_mi != u_mi_clamped) {
-      error_integral_ = (u_mi_clamped - ku_mi * err) / ki_mi;
+      error_integral_ = (u_mi_clamped - ku_mi * (err > 0 ? err : -err)) / ki_mi;
   }
   if (ki_ma != 0.f && u_ma != u_ma_clamped) {
-      error_integral_ = (u_ma_clamped - ku_ma * err) / ki_ma;
+      error_integral_ = (u_ma_clamped - ku_ma * (err > 0 ? err : -err)) / ki_ma;
   }
+  // Simplified anti-windup for Atm
   if (ki_at != 0.f && u_at != u_at_clamped) {
-      error_integral_ = -( (u_at_clamped - ku_at * (-err)) / ki_at );
+      // rough approx
+      error_integral_ *= 0.9f; 
   }
 
   return {u_mi_clamped, u_ma_clamped, u_at_clamped};
@@ -386,7 +428,6 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   enable_thread_pinning_ = this->declare_parameter<bool>("enable_thread_pinning", true);
   cpu_pins_param_ = this->declare_parameter<std::vector<int64_t>>("cpu_pins", std::vector<int64_t>{0,1,2,3});
 
-  // [수정됨] num_positive_channels 파라미터 로드
   num_positive_channels_ = this->declare_parameter<int>("num_positive_channels", 8);
 
   sensor_.atm_offset = get_param_or<double>(this, "Sensor_calibration.atm_offset", 101.325);
@@ -431,6 +472,7 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   mpc_.neg_ki_micro = get_param_or<double>(this, "MPC_parameters.neg_ki_micro", 0.0);
   mpc_.neg_ki_macro = get_param_or<double>(this, "MPC_parameters.neg_ki_macro", 0.0);
   mpc_.neg_ki_atm   = get_param_or<double>(this, "MPC_parameters.neg_ki_atm",   0.0);
+  mpc_.macro_gain_multiplier = get_param_or<double>(this, "MPC_parameters.macro_gain_multiplier", 1.0);
 
   auto get_ml = [&](const char* key, double def_ml){
     return get_param_or<double>(this, std::string("channel_volume.")+key, def_ml);
@@ -482,6 +524,8 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
       }
     );
   }
+
+  mpc_ref_kpa_.fill(101.325);
 
   auto reliable = rclcpp::QoS(rclcpp::QoSInitialization::from_rmw(rmw_qos_profile_default)).reliable().keep_last(5);
   sub_b0_ = create_subscription<std_msgs::msg::UInt16MultiArray>("teensy/b0/sensors", reliable, std::bind(&Controller::on_sensor_b0, this, _1));
@@ -584,11 +628,12 @@ void Controller::build_mpcs() {
       cfg.neg_ki_macro  = (float)mpc_.neg_ki_macro;
       cfg.neg_ki_atm    = (float)mpc_.neg_ki_atm;
 
-      cfg.ref_value = 0.0f;
+      cfg.ref_value = 101.325f;
       cfg.du_min = -30.f; cfg.du_max = +30.f;
       cfg.u_abs_min = 0.f; cfg.u_abs_max = 100.f;
 
       cfg.volume_m3 = ml_to_m3(vol_ml_[gid]);
+      cfg.macro_gain_multiplier = (float)mpc_.macro_gain_multiplier;
       
       auto mpc_obj = std::make_unique<AcadosMpc>(cfg);
       int nv = cfg.n_u * cfg.NP; 
@@ -781,9 +826,18 @@ void Controller::on_timer() {
 
   inner_loop_1khz(snap, static_cast<float>(period_ms_));
 
-  for (int i = 0; i < PWM_MAX_B0; ++i) cmds_b0_[i] = clamp_pwm(static_cast<int>(zoh_b0_[i]) + inner_b0_[i]);
-  for (int i = 0; i < PWM_MAX_B1; ++i) cmds_b1_[i] = clamp_pwm(static_cast<int>(zoh_b1_[i]) + inner_b1_[i]);
-  for (int i = 0; i < PWM_MAX_B2; ++i) cmds_b2_[i] = clamp_pwm(static_cast<int>(zoh_b2_[i]) + inner_b2_[i]);
+  if (sys_valve_operate_) {
+    // 밸브 작동이 켜져있을 때: 계산된 제어값(zoh + inner)을 적용
+    for (int i = 0; i < PWM_MAX_B0; ++i) cmds_b0_[i] = clamp_pwm(static_cast<int>(zoh_b0_[i]) + inner_b0_[i]);
+    for (int i = 0; i < PWM_MAX_B1; ++i) cmds_b1_[i] = clamp_pwm(static_cast<int>(zoh_b1_[i]) + inner_b1_[i]);
+    for (int i = 0; i < PWM_MAX_B2; ++i) cmds_b2_[i] = clamp_pwm(static_cast<int>(zoh_b2_[i]) + inner_b2_[i]);
+  } 
+  else {
+    // 밸브 작동이 꺼져있을 때: 모든 채널의 출력을 0으로 강제 (안전 모드)
+    std::fill(cmds_b0_.begin(), cmds_b0_.end(), 0);
+    std::fill(cmds_b1_.begin(), cmds_b1_.end(), 0);
+    std::fill(cmds_b2_.begin(), cmds_b2_.end(), 0);
+  }
 
   publish_cmds();
   ++tick_;

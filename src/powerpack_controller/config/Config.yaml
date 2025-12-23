@@ -10,28 +10,29 @@ pp_controller:
     Sensor_calibration:
       atm_offset: 101.325
       b0:
-        "0": { offset: 1007.0,  gain: 0.250 }
-        "1": { offset: 996.0,   gain: 0.250 }
-        "2": { offset: 1001.0,  gain: 0.250 }
-        "3": { offset: 1026.0,  gain: 0.250 }
+        "0": { offset: 991.0,  gain: 0.250 }
+        "1": { offset: 986.0,   gain: 0.250 }
+        "2": { offset: 997.0,  gain: 0.250 }
+        "3": { offset: 1002.0,  gain: 0.250 }
       b1:
-        "0": { offset: 981.0,   gain: 0.250 }
-        "1": { offset: 1004.0,  gain: 0.250 }
-        "2": { offset: 950.0,   gain: -0.02525 }
-        "3": { offset: 952.0,   gain: -0.02525 }
+        "0": { offset: 1000.0,   gain: 0.250 }
+        "1": { offset: 1021.0,  gain: 0.250 }
+        "2": { offset: 997.0,   gain: 0.250 }
+        "3": { offset: 996.0,   gain: 0.250 }
       b2:
-        "0": { offset: 934.0,   gain: -0.02525 }
-        "1": { offset: 948.0,   gain: -0.02525 }
-        "2": { offset: 958.0,   gain: -0.02525 }
-        "3": { offset: 958.0,   gain: -0.02525 }
-        "4": { offset: 666.0,   gain: 0.3150 }    # pos line (핀20)
-        "5": { offset: 655.0,   gain: -0.0378 }   # neg line (핀21)
+        "0": { offset: 944.0,   gain: -0.02525 }
+        "1": { offset: 960.0,   gain: -0.02525 }
+        "2": { offset: 977.0,   gain: -0.02525 }
+        "3": { offset: 970.0,   gain: -0.02525 }
+        "4": { offset: 668.0,   gain: 0.3150 }    # pos line (핀20)
+        "5": { offset: 679.0,   gain: -0.0378 }   # neg line (핀21)
         "6": { offset: 402.0,   gain: 0.6800 }    # macro line (핀22)
 
     RefTcp:
       enable: true
       host: "169.254.46.254"
-      port: 2272
+      # host: "127.0.0.1"
+      port: 2280
       expect_n: 12
       scale: 0.01
 
@@ -68,36 +69,53 @@ pp_controller:
       Ts: 0.004
       Q_values: 20.0
       R_values: 0.1
-      pos_ku_micro: 0.5
-      pos_ku_macro: 0.1
-      pos_ku_atm: 2.0
-      neg_ku_micro: 0.5
-      neg_ku_macro: 0.05
-      neg_ku_atm: 3.0
+      pos_ku_micro: 5.0
+      pos_ku_macro: 5.0
+      pos_ku_atm: 3.0
+      neg_ku_micro: 2.0
+      neg_ku_macro: 2.0
+      neg_ku_atm: 2.0
 
-      pos_ki_micro: 0.5
-      pos_ki_macro: 0.05
-      pos_ki_atm: 0.5
-      neg_ki_micro: 0.4
-      neg_ki_macro: 0.05
-      neg_ki_atm: 0.5
+      pos_ki_micro: 2.0
+      pos_ki_macro: 2.0
+      pos_ki_atm: 2.0
+      neg_ki_micro: 5.0
+      neg_ki_macro: 5.0
+      neg_ki_atm: 5.0
       
       macro_gain_multiplier: 1.0
 
-    # ROBOTORY chamber volume (Individual Channels)
+    # # test volume
+    # channel_volume:
+    #   ch0_ml: 10
+    #   ch1_ml: 10
+    #   ch2_ml: 10
+    #   ch3_ml: 10
+    #   ch4_ml: 10
+    #   ch5_ml: 10
+    #   ch6_ml: 2
+    #   ch7_ml: 2
+    #   ch8_ml: 10
+    #   ch9_ml: 10
+    #   ch10_ml: 10
+    #   ch11_ml: 10
+
+      # ROBOTORY chamber volume
     channel_volume:
-      ch0_ml: 1000
-      ch1_ml: 1000
-      ch2_ml: 300
-      ch3_ml: 300
-      ch4_ml: 600
-      ch5_ml: 600
-      ch6_ml: 1000
-      ch7_ml: 1000
-      ch8_ml: 300
-      ch9_ml: 300
-      ch10_ml: 0
-      ch11_ml: 0
+      #positive
+      ch0_ml: 300 # SORO
+      ch1_ml: 300 # SORO
+      ch2_ml: 300 # SORO
+      ch3_ml: 300 # SORO
+      ch4_ml: 600 # CAMAS
+      ch5_ml: 600 # CAMAS
+      ch6_ml: 50 # CAMAS
+      ch7_ml: 50 # CAMAS
+      #negative 
+      ch8_ml: 500 # SORO
+      ch9_ml: 500 # SORO
+      ch10_ml: 300 # SORO
+      ch11_ml: 300 # SORO
 
     system_parameters:
       sensor_print: false

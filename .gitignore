@@ -2,6 +2,7 @@
 build/
 install/
 log/
+bags/
 
 # VSCode / CLion / IDE stuff
 .vscode/
