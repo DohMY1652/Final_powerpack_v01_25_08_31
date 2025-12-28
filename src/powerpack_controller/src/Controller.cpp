@@ -301,14 +301,14 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
   const float Pref = cfg_.ref_value;
   float err = Pref - P_now;
 
-  // [추가됨] 에러 부호 변경 시 적분항 리셋 (Anti-windup on Zero Crossing)
-  // 설명: 현재 에러와 누적된 적분값의 부호가 다르면, 제어 방향이 바뀐 것이므로 적분항 초기화
+  // [Anti-windup] Zero Crossing 시 적분항 리셋
   if ((err > 0.0f && error_integral_ < 0.0f) || (err < 0.0f && error_integral_ > 0.0f)) {
       error_integral_ = 0.0f;
   }
 
   error_integral_ += err * cfg_.Ts;
 
+  // Gain 설정
   const float ku_mi = cfg_.is_positive ? cfg_.pos_ku_micro : cfg_.neg_ku_micro;
   const float ku_ma = cfg_.is_positive ? cfg_.pos_ku_macro : cfg_.neg_ku_macro;
   const float ku_at = cfg_.is_positive ? cfg_.pos_ku_atm   : cfg_.neg_ku_atm;
@@ -316,52 +316,126 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
   const float ki_ma = cfg_.is_positive ? cfg_.pos_ki_macro : cfg_.neg_ki_macro;
   const float ki_at = cfg_.is_positive ? cfg_.pos_ki_atm   : cfg_.neg_ki_atm;
 
-  float u_mi = 0.f, u_ma = 0.f, u_at = 0.f;
+  // 1. PI 제어기 계산 (이 값들을 '요구 유량(Effort)'으로 간주)
+  float u_mi_req = 0.f, u_ma_req = 0.f, u_at_req = 0.f;
 
-  if (cfg_.is_positive) { // 양압 챔버
-    if (err > 0.f) { // 가압 시
-      u_mi = ku_mi * err + ki_mi * error_integral_;
-      u_ma = ku_ma * err + ki_ma * error_integral_;
-      u_at = 0.f;
+  if (cfg_.is_positive) { // [양압 챔버]
+    if (err > 0.f) { // 가압 (Source -> Chamber)
+      u_mi_req = ku_mi * err + ki_mi * error_integral_;
+      u_ma_req = ku_ma * err + ki_ma * error_integral_;
+      u_at_req = 0.f;
     }
-    else { // 감압 시
-      u_mi = 0.f;
-      u_ma = 0.f;
-      // 감압 시에는 에러가 음수이므로, 제어 입력은 양수가 되도록 부호 반전
-      u_at = ku_at * (-err) + ki_at * (-error_integral_);
+    else { // 감압 (Chamber -> Atm)
+      u_mi_req = 0.f;
+      u_ma_req = 0.f;
+      u_at_req = ku_at * (-err) + ki_at * (-error_integral_);
     }
-  } else { // 음압 챔버
-    if (err < 0.f) { // 진공 흡입 필요 (Target < P_now)
-      u_mi = ku_mi * (-err) + ki_mi * (-error_integral_);
-      u_ma = ku_ma * (-err) + ki_ma * (-error_integral_);
-      u_at = 0.f;
+  } else { // [음압 챔버]
+    if (err < 0.f) { // 진공 흡입 (Chamber -> Source)
+      u_mi_req = ku_mi * (-err) + ki_mi * (-error_integral_);
+      u_ma_req = ku_ma * (-err) + ki_ma * (-error_integral_);
+      u_at_req = 0.f;
     }
-    else { // 대기 개방 필요 (Target > P_now)
-      u_mi = 0.f;
-      u_ma = 0.f;
-      u_at = ku_at * err + ki_at * error_integral_; 
+    else { // 대기 개방 (Atm -> Chamber)
+      u_mi_req = 0.f;
+      u_ma_req = 0.f;
+      u_at_req = ku_at * err + ki_at * error_integral_; 
     }
   }
-  (void)P_micro; (void)P_macro;
 
-  float u_mi_clamped = std::clamp(u_mi, 0.f, 100.f);
-  float u_ma_clamped = std::clamp(u_ma, 0.f, 100.f);
-  float u_at_clamped = std::clamp(u_at, 0.f, 100.f);
+  // 2. Volume Scaling 적용 (챔버 크기에 따른 유량 스케일링)
+  const float BASE_VOLUME_M3 = 10.0f * 1e-6f; 
+  float volume_scale = (float)cfg_.volume_m3 / BASE_VOLUME_M3;
+  if (volume_scale < 0.1f) volume_scale = 0.1f;
 
-  // [기존 코드 유지] Back-calculation Anti-windup (출력 포화 시 적분항 감쇄)
-  if (ki_mi != 0.f && u_mi != u_mi_clamped) {
-      error_integral_ = (u_mi_clamped - ku_mi * (err > 0 ? err : -err)) / ki_mi;
+  u_mi_req *= volume_scale;
+  u_ma_req *= volume_scale;
+  u_at_req *= volume_scale;
+
+  // ---------------------------------------------------------
+  // [추가됨] Input Mapping (MATLAB Logic Porting)
+  // 역할: 물리적 압력차(delP)와 밸브 특성을 고려하여 실제 PWM(0~100) 계산
+  // ---------------------------------------------------------
+  
+  // 람다 함수: input_mapping
+  auto map_valve_command = [](float U_req, float delP) -> float {
+      // delP가 음수면 물리적으로 불가능하므로 0 처리 (안전장치)
+      if (delP < 0.0f) delP = 0.0f;
+      
+      // MATLAB 식: U_min = 95.85 - 0.03191 * delP
+      float U_min = 95.85f - 0.03191f * delP;
+      
+      // MATLAB 식: Q_max = -407.1 + 0.1922 * delP + 407.2
+      // (-407.1 + 407.2 = 0.1)
+      float Q_max = 0.1f + 0.1922f * delP;
+
+      // 계산된 Dead-zone이 100을 넘거나 비정상일 경우 클램핑 (안전장치)
+      if (U_min > 100.0f) U_min = 100.0f;
+      if (U_min < 0.0f) U_min = 0.0f;
+      if (Q_max < 0.001f) Q_max = 0.001f; // 0으로 나누기 방지
+
+      float out = 0.0f;
+      if (U_req >= Q_max) {
+          out = 100.0f;
+      } else {
+          // 선형 보간: U/Q_max * (100 - U_min) + U_min
+          out = (U_req / Q_max) * (100.0f - U_min) + U_min;
+      }
+      return std::clamp(out, 0.0f, 100.0f);
+  };
+
+  // 각 밸브별 구동 압력차(delP) 계산 (단위 주의: MATLAB 식 계수에 맞는 단위 사용 필요, 보통 kPa)
+  // P_atm은 0(Gauge) 혹은 101.3(Abs) 등 시스템 기준에 맞게 설정 필요. 여기선 Gauge=0 가정.
+  const float P_ATM = 0.0f; 
+  
+  float delP_mi = 0.f;
+  float delP_ma = 0.f;
+  float delP_at = 0.f;
+
+  if (cfg_.is_positive) {
+      // 가압: Source(High) - Chamber(Low)
+      delP_mi = std::abs(P_micro - P_now);
+      delP_ma = std::abs(P_macro - P_now);
+      // 배기: Chamber(High) - Atm(Low)
+      delP_at = std::abs(P_now - P_ATM);
+  } else {
+      // 진공: Chamber(High) - Source(Low)
+      delP_mi = std::abs(P_now - P_micro); 
+      delP_ma = std::abs(P_now - P_macro);
+      // 파기: Atm(High) - Chamber(Low)
+      delP_at = std::abs(P_ATM - P_now);
   }
-  if (ki_ma != 0.f && u_ma != u_ma_clamped) {
-      error_integral_ = (u_ma_clamped - ku_ma * (err > 0 ? err : -err)) / ki_ma;
-  }
-  // Simplified anti-windup for Atm
-  if (ki_at != 0.f && u_at != u_at_clamped) {
-      // rough approx
+
+  // 매핑 적용 (입력이 0이면 매핑 불필요 -> 0 유지)
+  float u_mi_mapped = (u_mi_req > 0.001f) ? map_valve_command(u_mi_req, delP_mi) : 0.0f;
+  float u_ma_mapped = (u_ma_req > 0.001f) ? map_valve_command(u_ma_req, delP_ma) : 0.0f;
+  
+  // Atm 밸브도 동일한 매핑을 사용하는지 확인 필요. 
+  // MATLAB 코드의 context상 U(1)~U(5) 모두 input_mapping을 쓰므로 적용.
+  float u_at_mapped = (u_at_req > 0.001f) ? map_valve_command(u_at_req, delP_at) : 0.0f;
+
+  // ---------------------------------------------------------
+  // [수정됨] Anti-windup (Clamping Back-calculation)
+  // 비선형 매핑이 들어갔으므로, 단순 역계산보다는 
+  // "최종 출력이 포화(Saturation)되었을 때 적분 중지/감쇠" 로직 적용
+  // ---------------------------------------------------------
+  
+  bool is_saturated = false;
+
+  // Micro 밸브 포화 체크
+  if (u_mi_mapped >= 100.0f && ki_mi != 0.0f) is_saturated = true;
+  // Macro 밸브 포화 체크
+  if (u_ma_mapped >= 100.0f && ki_ma != 0.0f) is_saturated = true;
+  // Atm 밸브 포화 체크
+  if (u_at_mapped >= 100.0f && ki_at != 0.0f) is_saturated = true;
+
+  if (is_saturated) {
+      // 포화 시 적분항을 더 이상 쌓지 않거나 감쇠시킴 (여기선 기존 방식대로 감쇠 적용)
       error_integral_ *= 0.9f; 
   }
-
-  return {u_mi_clamped, u_ma_clamped, u_at_clamped};
+  
+  // 최종 리턴 (이미 map함수 내부에서 0~100 clamp됨)
+  return {u_mi_mapped, u_ma_mapped, u_at_mapped};
 }
 
 void AcadosMpc::build_mpc_qp(const std::vector<float>& A_seq,

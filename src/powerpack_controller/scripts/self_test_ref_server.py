@@ -11,7 +11,7 @@ import sys
 HOST = '0.0.0.0' 
 
 # C++ config.yaml의 RefClient.port와 일치해야 함
-PORT = 2274
+PORT = 2282
 
 # C++이 기대하는 데이터 형식 (Big-Endian, 12-ch, uint16_t)
 FORMAT_STRING = '>12H'
@@ -23,7 +23,7 @@ BUFFER_SIZE = NUM_INTEGERS * 2 # 24 bytes
 
 ref_values = [
     12132,   12132,  12132,  12132,  # 채널 0, 1, 2, 3
-    12132,  12132,  12132,  12132,  # 채널 4, 5, 6, 7
+    10132,  10132,  10132,  10132,  # 채널 4, 5, 6, 7
     8132,  8132,  8132,  8132   # 채널 8, 9, 10, 11
 ]
 # ref_values = [
