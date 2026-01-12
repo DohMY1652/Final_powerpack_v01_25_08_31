@@ -151,6 +151,7 @@ public:
     float ejector_p_limit = 11.325f; 
     float leakage_u_pos = 0.0f; 
     float leakage_u_neg = 0.0f; 
+    float target_time_constant = 0.2f;
 
   };
 
@@ -171,7 +172,7 @@ public:
 
 private:
   float read_current_pressure(const SensorSnapshot& s) const;
-  std::array<float,3> compute_input_reference(float P_now, float P_micro, float P_macro);
+  std::array<float,3> compute_input_reference(float P_now, float P_micro, float P_macro,float dt_sec);
   void build_mpc_qp(const std::vector<float>& A_seq, const std::vector<Eigen::RowVector3f>& B_seq, float P_now, const std::vector<float>& P_ref, Eigen::MatrixXf& P, Eigen::VectorXf& q, Eigen::MatrixXf& A_con, Eigen::VectorXf& LL, Eigen::VectorXf& UL);
   std::array<float,3> solve_qp_first_step(const Eigen::MatrixXf& P, const Eigen::VectorXf& q, const Eigen::MatrixXf& A_con, const Eigen::VectorXf& LL, const Eigen::VectorXf& UL);
 
@@ -184,7 +185,9 @@ private:
   Eigen::MatrixXf Q_, R_, Pmat_, Acon_;
   Eigen::VectorXf qvec_, LL_, UL_;
   std::array<float,3> last_u3_{0,0,0};
-  float error_integral_{0.0f};
+  float pos_error_integral_{0.0f};
+  float neg_error_integral_{0.0f};
+
   float last_error_{0.0f};
 };
 
@@ -381,6 +384,7 @@ private:
     double ejector_p_limit{11.325};
     double leakage_u_pos{0.0};
     double leakage_u_neg{0.0};
+    double target_tc{0.2};
   } mpc_;
   
   std::array<double, MPC_TOTAL> vol_ml_;

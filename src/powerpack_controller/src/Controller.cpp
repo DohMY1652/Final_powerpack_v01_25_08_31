@@ -297,19 +297,45 @@ float AcadosMpc::read_current_pressure(const SensorSnapshot&) const {
   return current_P_now_;
 }
 
-std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micro, float P_macro) {
+std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micro, float P_macro, float dt_sec) {
+  const double lpm2kgps = 0.0002155;
+  const double Rgas     = 287.0;
+  const double TempK    = 293.15;
+
+  const double Volume   = std::max(1e-12, (double)cfg_.volume_m3);
+
+  const float k0 = 0.0002181f;
+  const float k1 = 0.007379f;
+  const float k2 = 0.7191f;
+
+  float target_time_constant = cfg_.target_time_constant;
+  if (target_time_constant <= 0.001f) target_time_constant = 0.2f;
+
+  const float P_abs_atm = current_P_atm_; 
+
+
   const float Pref = cfg_.ref_value;
   float err = Pref - P_now;
 
+  float P_dot = abs(Pref - P_now) * 1000 / target_time_constant; //[Pa/sec]
+  float m_dot =  P_dot  * Volume / (Rgas * TempK) / lpm2kgps; //[LPM]
+
+
   // [Anti-windup 1] Zero Crossing 시 적분항 리셋
-  // 에러의 부호가 바뀌면 과거의 적분값은 필요 없으므로 초기화
-  if ((err > 0.0f && error_integral_ < 0.0f) || (err < 0.0f && error_integral_ > 0.0f)) {
-      error_integral_ = 0.0f;
+  if (cfg_.is_positive) {
+    if ((err > 0.0f && pos_error_integral_ < 0.0f) || (err < 0.0f && pos_error_integral_ > 0.0f)) {
+        pos_error_integral_ = 0.0f;
+    }
+
+    pos_error_integral_ += err * dt_sec;
+
+  }else {
+    if ((err > 0.0f && neg_error_integral_ > 0.0f) || (err < 0.0f && neg_error_integral_ < 0.0f)) {
+        neg_error_integral_ = 0.0f;
+    }
+    neg_error_integral_ -= err * dt_sec;
   }
-
-  // 일단 적분을 수행 (나중에 포화 확인 후 필요 시 취소)
-  error_integral_ += err * cfg_.Ts;
-
+  
   // Gain 설정
   const float ku_mi = cfg_.is_positive ? cfg_.pos_ku_micro : cfg_.neg_ku_micro;
   const float ku_ma = cfg_.is_positive ? cfg_.pos_ku_macro : cfg_.neg_ku_macro;
@@ -323,156 +349,70 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
 
   if (cfg_.is_positive) { // [양압 챔버]
     if (err > 0.f) { // 가압 (Source -> Chamber)
-      u_mi_req = ku_mi * err + ki_mi * error_integral_;
-      u_ma_req = ku_ma * err + ki_ma * error_integral_;
+      u_mi_req = (m_dot / sqrt(2 * P_micro * std::max(0.001f,(P_micro - P_now))) + k2 - k0 * P_micro) / k1 + ki_mi * pos_error_integral_;
+      u_ma_req = (m_dot / sqrt(2 * P_macro * std::max(0.001f,(P_macro - P_now))) + k2 - k0 * P_macro) / k1 + ki_ma * pos_error_integral_;
       u_at_req = 0.f;
     }
     else { // 감압 (Chamber -> Atm)
       u_mi_req = 0.f;
       u_ma_req = 0.f;
-      u_at_req = ku_at * (-err) + ki_at * (-error_integral_);
+      u_at_req = (m_dot / sqrt(2 * P_now * std::max(0.001f,(P_now - P_abs_atm))) + k2 - k0 * P_now) / k1 + ki_at * abs(pos_error_integral_);
     }
   } else { // [음압 챔버]
     if (err < 0.f) { // 진공 흡입 (Chamber -> Source)
-      u_mi_req = ku_mi * (-err) + ki_mi * (-error_integral_);
-      u_ma_req = ku_ma * (-err) + ki_ma * (-error_integral_);
+      u_mi_req = (m_dot / sqrt(2 * P_now * std::max(0.001f,(P_now - P_micro))) + k2 - k0 * P_now) / k1 + ki_mi * neg_error_integral_;
+      u_ma_req = (m_dot / sqrt(2 * P_now * std::max(0.001f,(P_now - P_macro))) + k2 - k0 * P_now) / k1 + ki_ma * neg_error_integral_;
       u_at_req = 0.f;
     }
     else { // 대기 개방 (Atm -> Chamber)
       u_mi_req = 0.f;
       u_ma_req = 0.f;
-      u_at_req = ku_at * err + ki_at * error_integral_; 
+      u_at_req = (m_dot / sqrt(2 * P_abs_atm * std::max(0.001f,(P_abs_atm - P_now))) + k2 - k0 * P_abs_atm) / k1 + ki_at * abs(neg_error_integral_);
     }
   }
 
-  // 2. Volume Scaling 적용
-  const float BASE_VOLUME_M3 = 10.0f * 1e-6f; 
-  float volume_scale = (float)cfg_.volume_m3 / BASE_VOLUME_M3;
-  if (volume_scale < 0.1f) volume_scale = 0.1f;
-
-  u_mi_req *= volume_scale;
-  u_ma_req *= volume_scale;
-  u_at_req *= volume_scale;
-
-  // ---------------------------------------------------------
-  // Input Mapping (Physics Based + Safety Margin)
-  // ---------------------------------------------------------
+  float u_mi_req_clamped =  std::clamp(u_mi_req, 0.0f, 100.0f);
+  float u_ma_req_clamped =  std::clamp(u_ma_req, 0.0f, 100.0f);
+  float u_at_req_clamped =  std::clamp(u_at_req, 0.0f, 100.0f);
   
-  // 물리 상수 정의 (절대압 기준)
-  const float k0 = 0.0002181f;
-  const float k1 = 0.007379f;
-  const float k2 = 0.7191f;
-
-  auto map_valve_command = [&](float U_req, float Pin, float Pout) -> float {
-    // 1. 물리 모델 기반 U_min 계산
-    float U_min_physics = (k2 - k0 * Pin) / k1;
-    float U_min = std::clamp(U_min_physics, 0.0f, 100.0f);
-
-    // 2. Q_max 계산
-    float delP = std::abs(Pin - Pout);
-    float Q_max = 0.1f + 0.1922f * delP;
-    if (Q_max < 0.001f) Q_max = 0.001f;
-
-    // 3. 최종 출력 계산 (Safety Margin 적용 및 연속성 보장)
-    const float SAFETY_MARGIN = 20.0f; 
-
-    // 입력이 너무 작으면 0 (Hard Zero)
-    if (U_req < 0.01f) return 0.0f;
-
-    // [수정된 로직]
-    // 그래프의 시작점(y절편) 정의
-    float start_val = U_min - SAFETY_MARGIN;
-    
-    // 그래프가 (0, start_val) 에서 (Q_max, 100) 으로 이어지도록 기울기 조정
-    // 식: out = start_val + (req / Q_max) * (100 - start_val)
-    
-    float out = 0.0f;
-    if (U_req >= Q_max) {
-        out = 100.0f;
-    } else {
-        // 기울기를 (100 - start_val)로 설정하여 U_req == Q_max일 때 정확히 100이 되도록 함
-        // 이렇게 하면 90 -> 100 점프 현상이 사라짐
-        out = start_val + (U_req / Q_max) * (100.0f - start_val);
-    }
-    
-    return std::clamp(out, 0.0f, 100.0f);
-  };
-
-  float u_mi_mapped = 0.0f;
-  float u_ma_mapped = 0.0f;
-  float u_at_mapped = 0.0f;
-
-  // 절대 대기압 (멤버 변수 사용)
-  const float P_abs_atm = current_P_atm_; 
-
-  if (cfg_.is_positive) {
-      // 가압: Source(High) -> Chamber(Low)
-      // 배기: Chamber(High) -> Atm(Low)
-      
-      // u_mi_mapped = (u_mi_req > 0.001f) ? map_valve_command(u_mi_req, P_micro, P_now) : 0.0f;
-      // u_ma_mapped = (u_ma_req > 0.001f) ? map_valve_command(u_ma_req, P_macro, P_now) : 0.0f;
-      // u_at_mapped = (u_at_req > 0.001f) ? map_valve_command(u_at_req, P_now, P_abs_atm) : 0.0f;
-
-      u_mi_mapped = u_mi_req;
-      u_ma_mapped = u_ma_req;
-      u_at_mapped = u_at_req;
-
-  } else {
-      // 진공: Chamber(High) -> Source(Low)
-      // 파기: Atm(High) -> Chamber(Low)
-      
-      // u_mi_mapped = (u_mi_req > 0.001f) ? map_valve_command(u_mi_req, P_now, P_micro) : 0.0f;
-      // u_ma_mapped = (u_ma_req > 0.001f) ? map_valve_command(u_ma_req, P_now, P_macro) : 0.0f;
-      // u_at_mapped = (u_at_req > 0.001f) ? map_valve_command(u_at_req, P_abs_atm, P_now) : 0.0f;
-
-      u_mi_mapped = u_mi_req;
-      u_ma_mapped = u_ma_req;
-      u_at_mapped = u_at_req;
-  }
-
-  // ---------------------------------------------------------
-  // [수정됨] Anti-windup 2 (Smart Clamping)
-  // 모든 가용 액추에이터가 100% 포화되었을 때만 적분을 멈춤 (Hold)
-  // ---------------------------------------------------------
-  
-  bool stop_integration = false;
+  bool pos_stop_integration = false;
+  bool neg_stop_integration = false;
 
   if (cfg_.is_positive) {
       // [양압 챔버]
       if (err > 0.0f) {
           // 가압 중: Micro와 Macro 모두 100 이상이어야 더 이상 힘을 못 낸다고 판단
-          if (u_mi_mapped >= 100.0f && u_ma_mapped >= 100.0f) {
-              stop_integration = true;
+          if (u_mi_req_clamped >= 100.0f && u_ma_req_clamped >= 100.0f) {
+              pos_stop_integration = true;
           }
       } else {
           // 감압 중: Atm 밸브만 사용
-          if (u_at_mapped >= 100.0f) {
-              stop_integration = true;
+          if (u_at_req_clamped >= 100.0f) {
+              pos_stop_integration = true;
           }
+      }
+      if (pos_stop_integration) {
+      pos_error_integral_ -= err * dt_sec; 
       }
   } else {
       // [음압 챔버]
       if (err < 0.0f) {
           // 진공 흡입 중: Micro와 Macro 모두 100 이상이어야 함
-          if (u_mi_mapped >= 100.0f && u_ma_mapped >= 100.0f) {
-              stop_integration = true;
+          if (u_mi_req_clamped >= 100.0f && u_ma_req_clamped >= 100.0f) {
+              neg_stop_integration = true;
           }
       } else {
           // 대기 개방 중
-          if (u_at_mapped >= 100.0f) {
-              stop_integration = true;
+          if (u_at_req_clamped >= 100.0f) {
+              neg_stop_integration = true;
           }
+      }
+      if (neg_stop_integration) {
+      neg_error_integral_ += err * dt_sec; 
       }
   }
 
-  if (stop_integration) {
-      // 방금 더했던 적분항을 다시 빼서 값을 유지(Clamping)
-      // 에러가 계속 누적되어 적분값이 비정상적으로 커지는 것을 방지하되,
-      // 0.9를 곱해서 값을 깎아내리지는 않음 (출력 100% 유지)
-      error_integral_ -= err * cfg_.Ts; 
-  }
-  
-  return {u_mi_mapped, u_ma_mapped, u_at_mapped};
+  return {u_mi_req_clamped, u_ma_req_clamped, u_at_req_clamped};
 }
 
 void AcadosMpc::build_mpc_qp(const std::vector<float>& A_seq,
@@ -541,14 +481,17 @@ std::array<float,3> AcadosMpc::solve_qp_first_step(const Eigen::MatrixXf& P,
   return {solution(0), solution(1), solution(2)};
 }
 
-void AcadosMpc::solve(const SensorSnapshot& s, float /*dt_ms*/,
+void AcadosMpc::solve(const SensorSnapshot& s, float dt_ms,
                       std::array<uint16_t, MPC_OUT_DIM>& out3)
 {
   float P_now   = current_P_now_;
   float P_micro = current_P_micro_;
   float P_macro = current_P_macro_;
 
-  auto uref_arr = compute_input_reference(P_now, P_micro, P_macro);
+  float dt_sec = dt_ms / 1000.0f; 
+  if (dt_sec <= 0.0001f) dt_sec = cfg_.Ts;
+
+  auto uref_arr = compute_input_reference(P_now, P_micro, P_macro, dt_sec);
   Eigen::RowVector3f u_ref(uref_arr[0], uref_arr[1], uref_arr[2]);
 
   std::fill(P_ref_.begin(), P_ref_.end(), cfg_.ref_value);
@@ -655,6 +598,7 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   mpc_.ejector_p_limit = get_param_or<double>(this, "MPC_parameters.ejector_p_limit", 11.325);
   mpc_.leakage_u_pos = get_param_or<double>(this, "MPC_parameters.leakage_u_pos", 0.0);
   mpc_.leakage_u_neg = get_param_or<double>(this, "MPC_parameters.leakage_u_neg", 0.0);
+  mpc_.target_tc = get_param_or<double>(this, "MPC_parameters.target_time_constant", 0.2);
 
   auto get_ml = [&](const char* key, double def_ml){
     return get_param_or<double>(this, std::string("channel_volume.")+key, def_ml);
@@ -772,6 +716,7 @@ void Controller::build_mpcs() {
 
   auto ml_to_m3 = [](double ml){ return ml * 1e-6; };
 
+
   for (int gid = 0; gid < MPC_TOTAL; ++gid) {
       if (active_channels.find(gid) == active_channels.end()) {
           continue;
@@ -826,6 +771,8 @@ void Controller::build_mpcs() {
 
       cfg.leakage_u_pos = (float)mpc_.leakage_u_pos;
       cfg.leakage_u_neg = (float)mpc_.leakage_u_neg;
+
+      cfg.target_time_constant = (float)mpc_.target_tc;
       
       auto mpc_obj = std::make_unique<AcadosMpc>(cfg);
       int nv = cfg.n_u * cfg.NP; 
@@ -975,7 +922,7 @@ void Controller::on_timer() {
       }
 
       std::array<uint16_t, MPC_OUT_DIM> u3{};
-      mpc->solve(snap, 4.0f, u3); 
+      mpc->solve(snap, static_cast<float>(period_ms_), u3); 
 
       const int off  = mpc->cfg().pwm_offset;
       const int bidx = mpc->cfg().board_index;

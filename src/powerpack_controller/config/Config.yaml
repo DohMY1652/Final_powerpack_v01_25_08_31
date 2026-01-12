@@ -59,8 +59,8 @@ pp_controller:
 
     RefTcp:
       enable: true
-      host: "169.254.46.254"
-      # host: '127.0.0.1'
+      # host: "169.254.46.254"
+      host: '127.0.0.1'
       port: 2284
       expect_n: 12
       scale: 0.01
@@ -70,7 +70,7 @@ pp_controller:
         kp: 1.0
         ki: 0.0
         kd: 0.0
-        ref: 101.325
+        ref: 400.0
         pwm_index: 12
       
       neg:
@@ -111,19 +111,19 @@ pp_controller:
       # neg_ku_atm: 6.0
       neg_ku_atm: 0.0
 
-      # pos_ki_micro: 12.0
-      pos_ki_micro: 0.0
+      # pos_ki_micro: 5.0
       # pos_ki_macro: 5.0
-      pos_ki_macro: 100.0
-      # pos_ki_atm: 8.0
-      pos_ki_atm: 160.0
-      # neg_ki_micro: 6.0
-      neg_ki_micro: 120.0
+      # pos_ki_atm: 5.0
+      # neg_ki_micro: 10.0
       # neg_ki_macro: 10.0
-      neg_ki_macro: 0.0
-      # neg_ki_atm: 10.0
-      neg_ki_atm: 200.0
+      # neg_ki_atm: 20.0
       
+      pos_ki_micro: 1.0
+      pos_ki_macro: 1.0
+      pos_ki_atm: 1.0
+      neg_ki_micro: 1.0
+      neg_ki_macro: 1.0
+      neg_ki_atm: 1.0
       macro_gain_multiplier: 0.9
 
       ejector_k: 0.005         
@@ -131,6 +131,8 @@ pp_controller:
       
       leakage_u_pos: 0.0
       leakage_u_neg: 0.0
+
+      target_time_constant: 5.0
 
     # test volume
     channel_volume:
