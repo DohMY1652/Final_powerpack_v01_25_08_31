@@ -154,6 +154,7 @@ public:
 
   };
 
+
   explicit AcadosMpc(const Config& cfg);
   void set_qp_solver(std::shared_ptr<QP> qp);
   inline void set_ref_value(float ref_kpa) { cfg_.ref_value = ref_kpa; }
@@ -324,6 +325,13 @@ private:
   void publish_cmds();
    
 private:
+
+  double sensor_filter_alpha_{1.0};
+  std::vector<double> filt_state_b0_;
+  std::vector<double> filt_state_b1_;
+  std::vector<double> filt_state_b2_;
+  bool filter_initialized_{false};
+
   int period_ms_{1000 / PWM_RATE_HZ};
   bool enable_thread_pinning_{true};
   std::vector<int64_t> cpu_pins_param_;

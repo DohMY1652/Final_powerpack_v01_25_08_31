@@ -1,10 +1,7 @@
 #pragma once
 
 #include <rclcpp/rclcpp.hpp>
-// === [수정됨] 필요한 헤더 (센서: UInt16, 명령: UInt16) ===
-// #include <std_msgs/msg/float32_multi_array.hpp> // 사용 안 함
 #include <std_msgs/msg/u_int16_multi_array.hpp> // 센서 및 명령용
-// =======================================================
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
@@ -24,40 +21,38 @@
 #include <sstream>
 #include <memory>
 #include <thread>
-#include <array> // for b3_analog_cache_
+#include <array> 
 
 using namespace std::chrono_literals;
 
 static constexpr int PWM_MAX    = 15; // board3 uses 15 channels
 static constexpr int ANALOG_MAX = 7;  // board3 uses 7 channels
 
-// 1. PWM 보드 (1, 2, 3)용 패킷
 #pragma pack(push, 1)
 struct SensorPacket {
   uint8_t  hdr0;      // 0xAA
   uint8_t  hdr1;      // 0x55
   uint8_t  board_id;
-  uint16_t analog[ANALOG_MAX]; // always 7 on wire
+  uint16_t analog[ANALOG_MAX]; 
   uint8_t  status;
   uint8_t  seq;
-  uint8_t  checksum;  // XOR of bytes [0..(sizeof-2)]
+  uint8_t  checksum;  
 };
 struct CommandPacket {
   uint8_t  hdr0;      // 0x55
   uint8_t  hdr1;      // 0xAA
   uint8_t  board_id;
-  uint16_t pwm[PWM_MAX]; // always 15 on wire
+  uint16_t pwm[PWM_MAX]; 
   uint8_t  seq;
-  uint8_t  checksum;     // XOR of bytes [0..(sizeof-2)]
+  uint8_t  checksum;     
 };
 #pragma pack(pop)
 
-// 2. ADC 보드 (4)용 패킷 (헤더 0xBB 0x66)
-const size_t ADC_PACKET_SIZE = 30; // 2B Hdr + 4B TS + 24B Data (12ch)
+// ADC 보드 (4)용 상수
+const size_t ADC_PACKET_SIZE = 30; 
 const size_t ADC_HEADER_SIZE = 2;
 const size_t ADC_TS_SIZE = 4;
 const size_t ADC_DATA_SIZE = 24;
-
 
 class TeensyBridge : public rclcpp::Node {
 public:
@@ -65,6 +60,7 @@ public:
   ~TeensyBridge() override;
 
 private:
+  // Checksum Helpers
   static inline uint8_t xor_checksum(const uint8_t* p, size_t n_wo_cksum) {
     uint8_t s = 0; for (size_t i = 0; i < n_wo_cksum; ++i) s ^= p[i]; return s;
   }
@@ -73,18 +69,22 @@ private:
   }
   static int open_serial_or_die(const std::string& port);
 
-  // autodetect
-  void autodetect_and_build_boards();
+  // === [추가됨] 보드 빌드 함수 (하드웨어 vs 시뮬레이션) ===
+  void autodetect_and_build_boards(); // 하드웨어 탐색
+  void build_virtual_boards();        // 시뮬레이션용 가상 보드 생성
+  // ======================================================
 
-  // runtime
+  // Runtime
   void on_timer();
   void on_stats_timer();
   rcl_interfaces::msg::SetParametersResult on_param_change(
       const std::vector<rclcpp::Parameter>& params);
 
+  // Parsers
   void parse_pwm_board_packets(size_t idx); // PWM 보드 1,2,3용
   void parse_adc_board_packets(size_t idx); // ADC 보드 4용
 
+  // Callbacks
   void on_cmd(size_t idx, const std_msgs::msg::UInt16MultiArray::SharedPtr msg);
   void on_monitor_enable(size_t idx, const std_msgs::msg::Bool::SharedPtr msg);
 
@@ -95,7 +95,7 @@ private:
     uint8_t     board_id{1};
     int         pwm_count{12};
     int         analog_count{4};
-    bool        is_adc_board{false}; // ADC 보드(4) 식별 플래그
+    bool        is_adc_board{false}; 
 
     // serial
     int         fd{-1};
@@ -109,7 +109,7 @@ private:
 
     // command state
     std::mutex  cmd_mtx;
-    uint16_t    current_pwm[PWM_MAX]{}; // up to 15 for wire
+    uint16_t    current_pwm[PWM_MAX]{}; 
     bool        have_cmd{false};
 
     // monitor
@@ -123,35 +123,34 @@ private:
     size_t      tx_bytes_window{0};
   };
 
-  // params
+  // === Parameters ===
+  bool     use_hardware_{true}; // [추가됨] 시뮬레이션 모드 플래그
   std::vector<std::string> ports_;
   std::vector<int64_t>     board_ids_param_;
   std::vector<int64_t>     pwm_channels_param_;
   std::vector<int64_t>     analog_channels_param_;
-  int      period_ms_{10}; // 100Hz (10ms)
+  int      period_ms_{10}; 
   int      stats_period_ms_{1000};
   bool     monitor_enabled_default_{false};
   bool     lock_mem_{true};
 
-  // timers
+  // Timers & Handles
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::TimerBase::SharedPtr stats_timer_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
 
-  // boards
+  // Boards Container
   std::vector<std::unique_ptr<Board>> boards_;
 
-  // === [수정됨] 센서 퍼블리셔 (b0, b1, b2) -> UInt16MultiArray ===
+  // Publishers
   rclcpp::Publisher<std_msgs::msg::UInt16MultiArray>::SharedPtr sensor_pub_b0_;
   rclcpp::Publisher<std_msgs::msg::UInt16MultiArray>::SharedPtr sensor_pub_b1_;
   rclcpp::Publisher<std_msgs::msg::UInt16MultiArray>::SharedPtr sensor_pub_b2_;
-  // ==========================================================
 
-  // === [수정됨] b2 토픽 융합을 위한 보드 3의 아날로그 값 캐시 (uint16_t) ===
+  // Data Cache for Fusion (Board 3 -> Board 2 Topic)
   std::mutex b3_cache_mutex_;
-  std::array<uint16_t, 3> b3_analog_cache_{}; // 핀 20, 21, 22 값 (mV)
-  // ====================================================================
+  std::array<uint16_t, 3> b3_analog_cache_{}; 
 
-  // stats window anchor
+  // Stats
   std::chrono::steady_clock::time_point stats_window_start_{std::chrono::steady_clock::now()};
 };

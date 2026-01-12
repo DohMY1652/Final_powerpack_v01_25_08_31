@@ -301,11 +301,13 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
   const float Pref = cfg_.ref_value;
   float err = Pref - P_now;
 
-  // [Anti-windup] Zero Crossing 시 적분항 리셋
+  // [Anti-windup 1] Zero Crossing 시 적분항 리셋
+  // 에러의 부호가 바뀌면 과거의 적분값은 필요 없으므로 초기화
   if ((err > 0.0f && error_integral_ < 0.0f) || (err < 0.0f && error_integral_ > 0.0f)) {
       error_integral_ = 0.0f;
   }
 
+  // 일단 적분을 수행 (나중에 포화 확인 후 필요 시 취소)
   error_integral_ += err * cfg_.Ts;
 
   // Gain 설정
@@ -316,7 +318,7 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
   const float ki_ma = cfg_.is_positive ? cfg_.pos_ki_macro : cfg_.neg_ki_macro;
   const float ki_at = cfg_.is_positive ? cfg_.pos_ki_atm   : cfg_.neg_ki_atm;
 
-  // 1. PI 제어기 계산 (이 값들을 '요구 유량(Effort)'으로 간주)
+  // 1. PI 제어기 계산
   float u_mi_req = 0.f, u_ma_req = 0.f, u_at_req = 0.f;
 
   if (cfg_.is_positive) { // [양압 챔버]
@@ -343,7 +345,7 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
     }
   }
 
-  // 2. Volume Scaling 적용 (챔버 크기에 따른 유량 스케일링)
+  // 2. Volume Scaling 적용
   const float BASE_VOLUME_M3 = 10.0f * 1e-6f; 
   float volume_scale = (float)cfg_.volume_m3 / BASE_VOLUME_M3;
   if (volume_scale < 0.1f) volume_scale = 0.1f;
@@ -353,88 +355,123 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
   u_at_req *= volume_scale;
 
   // ---------------------------------------------------------
-  // [추가됨] Input Mapping (MATLAB Logic Porting)
-  // 역할: 물리적 압력차(delP)와 밸브 특성을 고려하여 실제 PWM(0~100) 계산
+  // Input Mapping (Physics Based + Safety Margin)
   // ---------------------------------------------------------
   
-  // 람다 함수: input_mapping
-  auto map_valve_command = [](float U_req, float delP) -> float {
-      // delP가 음수면 물리적으로 불가능하므로 0 처리 (안전장치)
-      if (delP < 0.0f) delP = 0.0f;
-      
-      // MATLAB 식: U_min = 95.85 - 0.03191 * delP
-      float U_min = 95.85f - 0.03191f * delP;
-      
-      // MATLAB 식: Q_max = -407.1 + 0.1922 * delP + 407.2
-      // (-407.1 + 407.2 = 0.1)
-      float Q_max = 0.1f + 0.1922f * delP;
+  // 물리 상수 정의 (절대압 기준)
+  const float k0 = 0.0002181f;
+  const float k1 = 0.007379f;
+  const float k2 = 0.7191f;
 
-      // 계산된 Dead-zone이 100을 넘거나 비정상일 경우 클램핑 (안전장치)
-      if (U_min > 100.0f) U_min = 100.0f;
-      if (U_min < 0.0f) U_min = 0.0f;
-      if (Q_max < 0.001f) Q_max = 0.001f; // 0으로 나누기 방지
+  auto map_valve_command = [&](float U_req, float Pin, float Pout) -> float {
+    // 1. 물리 모델 기반 U_min 계산
+    float U_min_physics = (k2 - k0 * Pin) / k1;
+    float U_min = std::clamp(U_min_physics, 0.0f, 100.0f);
 
-      float out = 0.0f;
-      if (U_req >= Q_max) {
-          out = 100.0f;
-      } else {
-          // 선형 보간: U/Q_max * (100 - U_min) + U_min
-          out = (U_req / Q_max) * (100.0f - U_min) + U_min;
-      }
-      return std::clamp(out, 0.0f, 100.0f);
+    // 2. Q_max 계산
+    float delP = std::abs(Pin - Pout);
+    float Q_max = 0.1f + 0.1922f * delP;
+    if (Q_max < 0.001f) Q_max = 0.001f;
+
+    // 3. 최종 출력 계산 (Safety Margin 적용 및 연속성 보장)
+    const float SAFETY_MARGIN = 20.0f; 
+
+    // 입력이 너무 작으면 0 (Hard Zero)
+    if (U_req < 0.01f) return 0.0f;
+
+    // [수정된 로직]
+    // 그래프의 시작점(y절편) 정의
+    float start_val = U_min - SAFETY_MARGIN;
+    
+    // 그래프가 (0, start_val) 에서 (Q_max, 100) 으로 이어지도록 기울기 조정
+    // 식: out = start_val + (req / Q_max) * (100 - start_val)
+    
+    float out = 0.0f;
+    if (U_req >= Q_max) {
+        out = 100.0f;
+    } else {
+        // 기울기를 (100 - start_val)로 설정하여 U_req == Q_max일 때 정확히 100이 되도록 함
+        // 이렇게 하면 90 -> 100 점프 현상이 사라짐
+        out = start_val + (U_req / Q_max) * (100.0f - start_val);
+    }
+    
+    return std::clamp(out, 0.0f, 100.0f);
   };
 
-  // 각 밸브별 구동 압력차(delP) 계산 (단위 주의: MATLAB 식 계수에 맞는 단위 사용 필요, 보통 kPa)
-  // P_atm은 0(Gauge) 혹은 101.3(Abs) 등 시스템 기준에 맞게 설정 필요. 여기선 Gauge=0 가정.
-  const float P_ATM = 0.0f; 
-  
-  float delP_mi = 0.f;
-  float delP_ma = 0.f;
-  float delP_at = 0.f;
+  float u_mi_mapped = 0.0f;
+  float u_ma_mapped = 0.0f;
+  float u_at_mapped = 0.0f;
+
+  // 절대 대기압 (멤버 변수 사용)
+  const float P_abs_atm = current_P_atm_; 
 
   if (cfg_.is_positive) {
-      // 가압: Source(High) - Chamber(Low)
-      delP_mi = std::abs(P_micro - P_now);
-      delP_ma = std::abs(P_macro - P_now);
-      // 배기: Chamber(High) - Atm(Low)
-      delP_at = std::abs(P_now - P_ATM);
+      // 가압: Source(High) -> Chamber(Low)
+      // 배기: Chamber(High) -> Atm(Low)
+      
+      // u_mi_mapped = (u_mi_req > 0.001f) ? map_valve_command(u_mi_req, P_micro, P_now) : 0.0f;
+      // u_ma_mapped = (u_ma_req > 0.001f) ? map_valve_command(u_ma_req, P_macro, P_now) : 0.0f;
+      // u_at_mapped = (u_at_req > 0.001f) ? map_valve_command(u_at_req, P_now, P_abs_atm) : 0.0f;
+
+      u_mi_mapped = u_mi_req;
+      u_ma_mapped = u_ma_req;
+      u_at_mapped = u_at_req;
+
   } else {
-      // 진공: Chamber(High) - Source(Low)
-      delP_mi = std::abs(P_now - P_micro); 
-      delP_ma = std::abs(P_now - P_macro);
-      // 파기: Atm(High) - Chamber(Low)
-      delP_at = std::abs(P_ATM - P_now);
+      // 진공: Chamber(High) -> Source(Low)
+      // 파기: Atm(High) -> Chamber(Low)
+      
+      // u_mi_mapped = (u_mi_req > 0.001f) ? map_valve_command(u_mi_req, P_now, P_micro) : 0.0f;
+      // u_ma_mapped = (u_ma_req > 0.001f) ? map_valve_command(u_ma_req, P_now, P_macro) : 0.0f;
+      // u_at_mapped = (u_at_req > 0.001f) ? map_valve_command(u_at_req, P_abs_atm, P_now) : 0.0f;
+
+      u_mi_mapped = u_mi_req;
+      u_ma_mapped = u_ma_req;
+      u_at_mapped = u_at_req;
   }
 
-  // 매핑 적용 (입력이 0이면 매핑 불필요 -> 0 유지)
-  float u_mi_mapped = (u_mi_req > 0.001f) ? map_valve_command(u_mi_req, delP_mi) : 0.0f;
-  float u_ma_mapped = (u_ma_req > 0.001f) ? map_valve_command(u_ma_req, delP_ma) : 0.0f;
-  
-  // Atm 밸브도 동일한 매핑을 사용하는지 확인 필요. 
-  // MATLAB 코드의 context상 U(1)~U(5) 모두 input_mapping을 쓰므로 적용.
-  float u_at_mapped = (u_at_req > 0.001f) ? map_valve_command(u_at_req, delP_at) : 0.0f;
-
   // ---------------------------------------------------------
-  // [수정됨] Anti-windup (Clamping Back-calculation)
-  // 비선형 매핑이 들어갔으므로, 단순 역계산보다는 
-  // "최종 출력이 포화(Saturation)되었을 때 적분 중지/감쇠" 로직 적용
+  // [수정됨] Anti-windup 2 (Smart Clamping)
+  // 모든 가용 액추에이터가 100% 포화되었을 때만 적분을 멈춤 (Hold)
   // ---------------------------------------------------------
   
-  bool is_saturated = false;
+  bool stop_integration = false;
 
-  // Micro 밸브 포화 체크
-  if (u_mi_mapped >= 100.0f && ki_mi != 0.0f) is_saturated = true;
-  // Macro 밸브 포화 체크
-  if (u_ma_mapped >= 100.0f && ki_ma != 0.0f) is_saturated = true;
-  // Atm 밸브 포화 체크
-  if (u_at_mapped >= 100.0f && ki_at != 0.0f) is_saturated = true;
+  if (cfg_.is_positive) {
+      // [양압 챔버]
+      if (err > 0.0f) {
+          // 가압 중: Micro와 Macro 모두 100 이상이어야 더 이상 힘을 못 낸다고 판단
+          if (u_mi_mapped >= 100.0f && u_ma_mapped >= 100.0f) {
+              stop_integration = true;
+          }
+      } else {
+          // 감압 중: Atm 밸브만 사용
+          if (u_at_mapped >= 100.0f) {
+              stop_integration = true;
+          }
+      }
+  } else {
+      // [음압 챔버]
+      if (err < 0.0f) {
+          // 진공 흡입 중: Micro와 Macro 모두 100 이상이어야 함
+          if (u_mi_mapped >= 100.0f && u_ma_mapped >= 100.0f) {
+              stop_integration = true;
+          }
+      } else {
+          // 대기 개방 중
+          if (u_at_mapped >= 100.0f) {
+              stop_integration = true;
+          }
+      }
+  }
 
-  if (is_saturated) {
-      // 포화 시 적분항을 더 이상 쌓지 않거나 감쇠시킴 (여기선 기존 방식대로 감쇠 적용)
-      error_integral_ *= 0.9f; 
+  if (stop_integration) {
+      // 방금 더했던 적분항을 다시 빼서 값을 유지(Clamping)
+      // 에러가 계속 누적되어 적분값이 비정상적으로 커지는 것을 방지하되,
+      // 0.9를 곱해서 값을 깎아내리지는 않음 (출력 100% 유지)
+      error_integral_ -= err * cfg_.Ts; 
   }
   
-  // 최종 리턴 (이미 map함수 내부에서 0~100 clamp됨)
   return {u_mi_mapped, u_ma_mapped, u_at_mapped};
 }
 
@@ -565,6 +602,13 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   num_positive_channels_ = this->declare_parameter<int>("num_positive_channels", 8);
 
   sensor_.atm_offset = get_param_or<double>(this, "Sensor_calibration.atm_offset", 101.325);
+
+  sensor_filter_alpha_ = this->declare_parameter<double>("sensor_filter_alpha", 1.0);
+
+  if (sensor_filter_alpha_ <= 0.0) sensor_filter_alpha_ = 0.01;
+  if (sensor_filter_alpha_ > 1.0)  sensor_filter_alpha_ = 1.0;
+
+  RCLCPP_INFO(get_logger(), "Sensor Filter Alpha applied: %.3f", sensor_filter_alpha_);
 
   auto load_board = [&](const std::string& base, auto& arr, int expected_len){
     for (int i = 0; i < expected_len; ++i) {
@@ -702,6 +746,10 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   "RefTcp: enable=%d host=%s port=%d expect_n=%d scale=%.3f",
   (int)ref_client_cfg_.enable, ref_client_cfg_.host.c_str(),
   ref_client_cfg_.port, ref_client_cfg_.expect_n, ref_client_cfg_.scale);
+
+  filt_state_b0_.assign(ANALOG_B0, 101.325);
+  filt_state_b1_.assign(ANALOG_B1, 101.325);
+  filt_state_b2_.assign(ANALOG_B2, 101.325);
   
   RCLCPP_INFO(this->get_logger(), "Controller node initialization complete.");
 }
@@ -816,47 +864,73 @@ void Controller::on_timer() {
     snap.b2 = sensors_b2_;
   }
 
+  // ----------------------------------------------------------------
+  // 1. Raw Data -> kPa 변환 및 LPF(저주파 통과 필터) 적용
+  // ----------------------------------------------------------------
+  
+  std::vector<double> current_filt_b0(ANALOG_B0);
+  std::vector<double> current_filt_b1(ANALOG_B1);
+  std::vector<double> current_filt_b2(ANALOG_B2);
+
+  auto apply_filter_arr = [&](int count, const auto& raw_arr, std::vector<double>& state_arr, std::vector<double>& out_arr, int board_idx) {
+    for(int i=0; i<count; ++i) {
+      // 1) 현재 Raw -> kPa 변환
+      double raw_kpa = 101.325;
+      if (board_idx == 0) raw_kpa = sensor_.kpa_b0(i, raw_arr[i]);
+      else if (board_idx == 1) raw_kpa = sensor_.kpa_b1(i, raw_arr[i]);
+      else raw_kpa = sensor_.kpa_b2(i, raw_arr[i]);
+
+      // 2) 필터 적용: y_new = alpha * x_new + (1 - alpha) * y_old
+      if (!filter_initialized_) {
+          state_arr[i] = raw_kpa; // 첫 실행 시 현재 값으로 초기화
+      }
+      
+      double filtered_val = sensor_filter_alpha_ * raw_kpa + (1.0 - sensor_filter_alpha_) * state_arr[i];
+      
+      // 3) 상태 업데이트 및 출력 저장
+      state_arr[i] = filtered_val;
+      out_arr[i]   = filtered_val;
+    }
+  };
+
+  apply_filter_arr(ANALOG_B0, snap.b0, filt_state_b0_, current_filt_b0, 0);
+  apply_filter_arr(ANALOG_B1, snap.b1, filt_state_b1_, current_filt_b1, 1);
+  apply_filter_arr(ANALOG_B2, snap.b2, filt_state_b2_, current_filt_b2, 2);
+  
+  filter_initialized_ = true;
+
+  // ----------------------------------------------------------------
+  // 2. 필터링된 값을 Topic으로 Publish (그래프 확인용)
+  // ----------------------------------------------------------------
   {
     std_msgs::msg::Float64MultiArray msg_b0, msg_b1, msg_b2;
-    msg_b0.data.reserve(ANALOG_B0);
-    msg_b1.data.reserve(ANALOG_B1);
-    msg_b2.data.reserve(ANALOG_B2);
-
-    for(int i=0; i<ANALOG_B0; ++i) msg_b0.data.push_back(sensor_.kpa_b0(i, snap.b0[i]));
-    for(int i=0; i<ANALOG_B1; ++i) msg_b1.data.push_back(sensor_.kpa_b1(i, snap.b1[i]));
-    for(int i=0; i<ANALOG_B2; ++i) msg_b2.data.push_back(sensor_.kpa_b2(i, snap.b2[i]));
+    msg_b0.data.assign(current_filt_b0.begin(), current_filt_b0.end());
+    msg_b1.data.assign(current_filt_b1.begin(), current_filt_b1.end());
+    msg_b2.data.assign(current_filt_b2.begin(), current_filt_b2.end());
 
     pub_kpa_b0_->publish(msg_b0);
     pub_kpa_b1_->publish(msg_b1);
     pub_kpa_b2_->publish(msg_b2);
   }
 
-  auto get_u16_b0 = [&](int idx)->uint16_t {
-    return (idx >= 0 && idx < ANALOG_B0) ? snap.b0[(size_t)idx] : 0;
-  };
-  auto get_u16_b1 = [&](int idx)->uint16_t {
-    return (idx >= 0 && idx < ANALOG_B1) ? snap.b1[(size_t)idx] : 0;
-  };
-  auto get_u16_b2 = [&](int idx)->uint16_t {
-    return (idx >= 0 && idx < ANALOG_B2) ? snap.b2[(size_t)idx] : 0;
-  };
+  // 필터링된 주요 라인 압력값 추출
+  const double P_line_pos_kPa   = current_filt_b2[4]; // 필터 적용됨
+  const double P_line_neg_kPa   = current_filt_b2[5]; // 필터 적용됨
+  const double P_line_macro_kPa = current_filt_b2[6]; // 필터 적용됨
+  const double P_atm_kPa        = sensor_.kpa_atm();  // Atm은 상수라 필터 불필요
 
-  const double P_line_pos_kPa   = sensor_.kpa_b2(4, get_u16_b2(4));
-  const double P_line_neg_kPa   = sensor_.kpa_b2(5, get_u16_b2(5));
-  const double P_line_macro_kPa = sensor_.kpa_b2(6, get_u16_b2(6));
-  const double P_atm_kPa        = sensor_.kpa_atm();
-
+  // Macro Switch 로직
   if (macro_switch_pwm_index_ >= 0 && macro_switch_pwm_index_ < PWM_MAX_B2) {
     const bool macro_on = (P_line_macro_kPa > macro_switch_threshold_kpa_);
     zoh_b2_[(size_t)macro_switch_pwm_index_] = macro_on ? 1023 : 0;
   }
 
+  // Ref Snapshot 로직
   std::array<double, MPC_TOTAL> ref_snapshot{};
   {
     std::lock_guard<std::mutex> lk(mpc_ref_mtx_);
     ref_snapshot = mpc_ref_kpa_;
   }
-
   if (pub_mpc_refs_) {
     std_msgs::msg::Float64MultiArray msg;
     msg.data.assign(ref_snapshot.begin(), ref_snapshot.end());
@@ -866,27 +940,23 @@ void Controller::on_timer() {
   const int phase = static_cast<int>(tick_ % MPC_PHASES);
   std::vector<std::function<void()>> tasks;
   
+  // MPC Task 생성 (필터된 압력값 캡처)
   for (auto& mpc : mpcs_) {
     if ((mpc->cfg().global_id % MPC_PHASES) != phase) continue;
 
     tasks.emplace_back([this,
                         &mpc,
+                        current_filt_b0, current_filt_b1, current_filt_b2,
                         snap,
-                        get_u16_b0, get_u16_b1, get_u16_b2,
                         P_line_pos_kPa, P_line_neg_kPa, P_line_macro_kPa, P_atm_kPa,
                         ref_snapshot]() {
       const int b   = mpc->cfg().board_index;
       const int ref = mpc->cfg().reference_channel;
 
-      uint16_t raw = 0;
-      if      (b == 0) raw = get_u16_b0(ref);
-      else if (b == 1) raw = get_u16_b1(ref);
-      else             raw = get_u16_b2(ref);
-
       double P_state_kPa = 101.325;
-      if      (b == 0) P_state_kPa = sensor_.kpa_b0(ref, raw);
-      else if (b == 1) P_state_kPa = sensor_.kpa_b1(ref, raw);
-      else             P_state_kPa = sensor_.kpa_b2(ref, raw);
+      if      (b == 0) P_state_kPa = current_filt_b0[ref];
+      else if (b == 1) P_state_kPa = current_filt_b1[ref];
+      else             P_state_kPa = current_filt_b2[ref];
 
       const bool pos_side = mpc->cfg().is_positive;
 
@@ -905,30 +975,44 @@ void Controller::on_timer() {
       }
 
       std::array<uint16_t, MPC_OUT_DIM> u3{};
-      mpc->solve(snap, 4.0f, u3);
+      mpc->solve(snap, 4.0f, u3); 
 
       const int off  = mpc->cfg().pwm_offset;
       const int bidx = mpc->cfg().board_index;
       if      (bidx == 0) { zoh_b0_[off+0] = u3[0]; zoh_b0_[off+1] = u3[1]; zoh_b0_[off+2] = u3[2]; }
       else if (bidx == 1) { zoh_b1_[off+0] = u3[0]; zoh_b1_[off+1] = u3[1]; zoh_b1_[off+2] = u3[2]; }
-      else                 { zoh_b2_[off+0] = u3[0]; zoh_b2_[off+1] = u3[1]; zoh_b2_[off+2] = u3[2]; }
+      else                { zoh_b2_[off+0] = u3[0]; zoh_b2_[off+1] = u3[1]; zoh_b2_[off+2] = u3[2]; }
     });
   }
 
   pool_->run_batch_and_wait(tasks);
   
   const double dt = std::max(1e-6, (double)period_ms_ / 1000.0);
+
+  // 디버깅 출력을 위한 변수 선언
+  double debug_u_pos = 0.0;
+  double debug_u_neg = 0.0;
+
+  // -------------------------------------------------------------
+  // [양압 라인 PID] (Positive Line)
+  // 상황: 압력 부족 -> 밸브 닫음 (Leak 방지) -> 압력 상승
+  // -------------------------------------------------------------
   {
+    // Ref(150) > Current(100) -> Error(+) -> u 증가
+    // u 증가 -> inverted_u 감소 -> 밸브 닫힘 -> 유출 막음 -> 압력 상승
     const double err = pid_pos_.ref - P_line_pos_kPa;
+    
     pid_pos_state_.integ += err * dt;
     double deriv = 0.0;
     if (pid_pos_state_.has_prev) deriv = (err - pid_pos_state_.prev_err) / dt;
 
     double u = pid_pos_.kp * err + pid_pos_.ki * pid_pos_state_.integ + pid_pos_.kd * deriv;
+    
+    // Anti-windup
     double u_clamped = std::clamp(u, pid_out_min_, pid_out_max_);
     if (u != u_clamped) {
       double excess = u - u_clamped;
-      if (pid_pos_.ki != 0.0) pid_pos_state_.integ -= excess / pid_pos_.ki;
+      if (std::abs(pid_pos_.ki) > 1e-6) pid_pos_state_.integ -= excess / pid_pos_.ki;
       u = u_clamped;
     } else {
       u = u_clamped;
@@ -937,47 +1021,72 @@ void Controller::on_timer() {
     pid_pos_state_.prev_err = err;
     pid_pos_state_.has_prev = true;
 
+    // [반전 출력] u가 클수록(에러가 클수록) 밸브를 닫음(PWM 감소)
     const double inverted_u = pid_out_max_ - u;
     const uint16_t pwm = static_cast<uint16_t>( std::round(inverted_u * 10.23) );
+    
     if (pid_pos_pwm_index_ >= 0 && pid_pos_pwm_index_ < PWM_MAX_B2) {
       zoh_b2_[(size_t)pid_pos_pwm_index_] = pwm;
     }
+
+    debug_u_pos = u; // 출력용 저장
   }
 
+  // -------------------------------------------------------------
+  // [음압 라인 PID] (Negative Line) - 수정됨
+  // 상황: 진공 부족 -> 밸브 닫음 (유입 차단) -> 진공도 유지/상승
+  // -------------------------------------------------------------
   {
-    const double err = pid_neg_.ref - P_line_neg_kPa;
+    // [수정 포인트 1] 에러 정의: (현재 - 목표)
+    // 예: 현재(90kPa, 진공약함) > 목표(20kPa, 진공강함) -> Error = +70 (양수)
+    // Error(+) -> u 증가 -> 아래에서 반전되어 밸브 닫힘
+    const double err = P_line_neg_kPa - pid_neg_.ref; 
+    
     pid_neg_state_.integ += err * dt;
     double deriv = 0.0;
     if (pid_neg_state_.has_prev) deriv = (err - pid_neg_state_.prev_err) / dt;
 
     double u = pid_neg_.kp * err + pid_neg_.ki * pid_neg_state_.integ + pid_neg_.kd * deriv;
+    
     double u_clamped = std::clamp(u, pid_out_min_, pid_out_max_);
-
     if (u != u_clamped) {
       double excess = u - u_clamped;
-      if (pid_neg_.ki != 0.0) pid_neg_state_.integ -= excess / pid_neg_.ki;
+      if (std::abs(pid_neg_.ki) > 1e-6) pid_neg_state_.integ -= excess / pid_neg_.ki;
     }
     u = u_clamped;
 
     pid_neg_state_.prev_err = err;
     pid_neg_state_.has_prev = true;
 
-    const uint16_t pwm = static_cast<uint16_t>( std::round(u * 10.23) );
+    // [수정 포인트 2] 반전 출력 적용 (양압과 동일 논리)
+    // 진공 부족(Error +) -> u 증가 -> inverted_u 감소 -> 밸브 닫힘 -> 유입 차단
+    const double inverted_u = pid_out_max_ - u;
+    const uint16_t pwm = static_cast<uint16_t>( std::round(inverted_u * 10.23) );
+
     if (pid_neg_pwm_index_ >= 0 && pid_neg_pwm_index_ < PWM_MAX_B2) {
       zoh_b2_[(size_t)pid_neg_pwm_index_] = pwm;
     }
+
+    debug_u_neg = u; // 출력용 저장
   }
+
+  // -------------------------------------------------------------
+  // [Debug Print] PID 제어값 터미널 출력
+  // -------------------------------------------------------------
+  // u값(0~100)을 확인하여 PID 게인 튜닝 시 활용
+  // printf("[PID Debug] u_pos: %.2f | u_neg: %.2f | P_pos: %.1f | P_neg: %.1f\n", 
+          // debug_u_pos, debug_u_neg, P_line_pos_kPa, P_line_neg_kPa);
+
 
   inner_loop_1khz(snap, static_cast<float>(period_ms_));
 
+  // 출력 적용 (밸브 작동 플래그 확인)
   if (sys_valve_operate_) {
-    // 밸브 작동이 켜져있을 때: 계산된 제어값(zoh + inner)을 적용
     for (int i = 0; i < PWM_MAX_B0; ++i) cmds_b0_[i] = clamp_pwm(static_cast<int>(zoh_b0_[i]) + inner_b0_[i]);
     for (int i = 0; i < PWM_MAX_B1; ++i) cmds_b1_[i] = clamp_pwm(static_cast<int>(zoh_b1_[i]) + inner_b1_[i]);
     for (int i = 0; i < PWM_MAX_B2; ++i) cmds_b2_[i] = clamp_pwm(static_cast<int>(zoh_b2_[i]) + inner_b2_[i]);
   } 
   else {
-    // 밸브 작동이 꺼져있을 때: 모든 채널의 출력을 0으로 강제 (안전 모드)
     std::fill(cmds_b0_.begin(), cmds_b0_.end(), 0);
     std::fill(cmds_b1_.begin(), cmds_b1_.end(), 0);
     std::fill(cmds_b2_.begin(), cmds_b2_.end(), 0);

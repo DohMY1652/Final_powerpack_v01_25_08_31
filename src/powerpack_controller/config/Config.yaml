@@ -1,52 +1,81 @@
+# ==========================================
+# Node 1: Teensy Bridge (Hardware Interface)
+# ==========================================
+teensy_bridge:
+  ros__parameters:
+    # [중요] true: 실제 장비 연결 / false: 시뮬레이션 모드(가상 데이터)
+    use_hardware: true
+    
+    # 4개 포트 설정 (use_hardware: true 일 때만 유효)
+    ports: ["/dev/ttyACM0", "/dev/ttyACM1", "/dev/ttyACM2", "/dev/ttyACM3"]
+    
+    # Board IDs: 1,2,3(PWM), 4(ADC)
+    board_ids: [1, 2, 3, 4]
+    
+    # 각 보드별 PWM 채널 수 (보드 4는 0)
+    pwm_channels: [12, 12, 15, 0]
+    
+    # 각 보드별 Analog 채널 수 (보드 4는 4개지만 내부적으로 12ch 처리)
+    analog_channels: [4, 4, 7, 0]
+    
+    period_ms: 50
+    stats_period_ms: 1000
+    monitor_enabled: true
+    mlock: true
+
+# ==========================================
+# Node 2: PP Controller (Control Algorithm)
+# ==========================================
 pp_controller:
   ros__parameters:
     # [수정됨] 양압(Positive) 채널의 개수 설정 (0 ~ num-1 까지 양압, 나머지 음압)
+    period_ms: 4
     num_positive_channels: 8
     
     active_mpc_channels: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
-    sensor_filter_alpha: 0.01
+    sensor_filter_alpha: 1.0
 
     # === per-channel calibration (map-based) ===
     Sensor_calibration:
       atm_offset: 101.325
       b0:
-        "0": { offset: 1005.0,  gain: 0.250 }
-        "1": { offset: 997.0,   gain: 0.250 }
-        "2": { offset: 1005.0,  gain: 0.250 }
-        "3": { offset: 1002.0,  gain: 0.250 }
+        "0": { offset: 998.0,  gain: 0.250 }
+        "1": { offset: 989.0,   gain: 0.250 }
+        "2": { offset: 998.0,  gain: 0.250 }
+        "3": { offset: 1006.0,  gain: 0.250 }
       b1:
-        "0": { offset: 974.0,   gain: 0.250 }
-        "1": { offset: 1000.0,  gain: 0.250 }
-        "2": { offset: 1000.0,   gain: 0.250 }
-        "3": { offset: 998.0,   gain: 0.250 }
+        "0": { offset: 969.0,   gain: 0.250 }
+        "1": { offset: 997.0,  gain: 0.250 }
+        "2": { offset: 1007.0,  gain: 0.250 }
+        "3": { offset: 997.0,   gain: 0.250 }
       b2:
-        "0": { offset: 932.0,   gain: -0.02525 }
+        "0": { offset: 952.0,   gain: -0.02525 }
         "1": { offset: 962.0,   gain: -0.02525 }
         "2": { offset: 946.0,   gain: -0.02525 }
         "3": { offset: 974.0,   gain: -0.02525 }
         "4": { offset: 667.0,   gain: 0.3150 }    # pos line (핀20)
-        "5": { offset: 655.0,   gain: -0.0378 }   # neg line (핀21)
+        "5": { offset: 650.0,   gain: -0.0378 }   # neg line (핀21)
         "6": { offset: 402.0,   gain: 0.6800 }    # macro line (핀22)
 
     RefTcp:
       enable: true
       host: "169.254.46.254"
-      # host: "127.0.0.1"
-      port: 2282
+      # host: '127.0.0.1'
+      port: 2284
       expect_n: 12
       scale: 0.01
 
     LinePID:
       pos:
-        kp: 4.0
-        ki: 1.0
+        kp: 1.0
+        ki: 0.0
         kd: 0.0
-        ref: 300.0
+        ref: 101.325
         pwm_index: 12
       
       neg:
-        kp: 0.8
-        ki: 0.2
+        kp: 1.0
+        ki: 0.0
         kd: 0.0
         ref: 40.0
         pwm_index: 13
@@ -66,23 +95,34 @@ pp_controller:
       NP: 20
       n_x: 1
       n_u: 3
-      Ts: 0.001
-      Q_values: 100.0
-      R_values: 0.1
-      pos_ku_micro: 0.0015
-      pos_ku_macro: 0.0005
-      pos_ku_atm: 0.005
+      Ts: 0.004
+      Q_values: 10.0
+      R_values: 10.0
+      # pos_ku_micro: 30.0
+      pos_ku_micro: 0.0
+      # pos_ku_macro: 15.0
+      pos_ku_macro: 0.0
+      # pos_ku_atm: 8.0
+      pos_ku_atm: 0.0
+      # neg_ku_micro: 15.0
       neg_ku_micro: 0.0
+      # neg_ku_macro: 6.0
       neg_ku_macro: 0.0
+      # neg_ku_atm: 6.0
       neg_ku_atm: 0.0
 
-  
-      pos_ki_micro: 0.0030
-      pos_ki_macro: 0.0004
-      pos_ki_atm: 0.020
-      neg_ki_micro: 0.0
+      # pos_ki_micro: 12.0
+      pos_ki_micro: 0.0
+      # pos_ki_macro: 5.0
+      pos_ki_macro: 100.0
+      # pos_ki_atm: 8.0
+      pos_ki_atm: 160.0
+      # neg_ki_micro: 6.0
+      neg_ki_micro: 120.0
+      # neg_ki_macro: 10.0
       neg_ki_macro: 0.0
-      neg_ki_atm: 0.0
+      # neg_ki_atm: 10.0
+      neg_ki_atm: 200.0
       
       macro_gain_multiplier: 0.9
 
@@ -94,35 +134,20 @@ pp_controller:
 
     # test volume
     channel_volume:
-      ch0_ml: 2.0
-      ch1_ml: 2.0
-      ch2_ml: 2.0
-      ch3_ml: 2.0
-      ch4_ml: 10.0
+      ch0_ml: 3.0
+      ch1_ml: 3.0
+      ch2_ml: 2.5
+      ch3_ml: 2.5
+      ch4_ml: 9.0
       ch5_ml: 10.0
+      # ch6_ml: 1.250
       ch6_ml: 1.250
+      # ch7_ml: 0.750
       ch7_ml: 0.750
       ch8_ml: 10.0
       ch9_ml: 10.0
       ch10_ml: 10.0
       ch11_ml: 10.0
-
-      # ROBOTORY chamber volume
-    # channel_volume:
-    #   #positive
-    #   ch0_ml: 300 # SORO
-    #   ch1_ml: 300 # SORO
-    #   ch2_ml: 300 # SORO
-    #   ch3_ml: 300 # SORO
-    #   ch4_ml: 600 # CAMAS
-    #   ch5_ml: 600 # CAMAS
-    #   ch6_ml: 62.5 # CAMAS
-    #   ch7_ml: 37.5 # CAMAS
-    #   #negative 
-    #   ch8_ml: 500 # SORO
-    #   ch9_ml: 500 # SORO
-    #   ch10_ml: 300 # SORO
-    #   ch11_ml: 300 # SORO
 
     system_parameters:
       sensor_print: false
