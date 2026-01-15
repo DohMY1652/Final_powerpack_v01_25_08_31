@@ -136,9 +136,9 @@ void TeensyBridge::build_virtual_boards() {
   boards_.resize(count);
 
   // 센서 퍼블리셔 생성
-  sensor_pub_b0_ = this->create_publisher<std_msgs::msg::UInt16MultiArray>("teensy/b0/sensors", 5);
-  sensor_pub_b1_ = this->create_publisher<std_msgs::msg::UInt16MultiArray>("teensy/b1/sensors", 5);
-  sensor_pub_b2_ = this->create_publisher<std_msgs::msg::UInt16MultiArray>("teensy/b2/sensors", 5);
+  sensor_pub_b0_ = this->create_publisher<std_msgs::msg::UInt16MultiArray>("teensy/b0/sensors", 1);
+  sensor_pub_b1_ = this->create_publisher<std_msgs::msg::UInt16MultiArray>("teensy/b1/sensors", 1);
+  sensor_pub_b2_ = this->create_publisher<std_msgs::msg::UInt16MultiArray>("teensy/b2/sensors", 1);
 
   for (size_t i = 0; i < count; ++i) {
     auto b = std::make_unique<Board>();

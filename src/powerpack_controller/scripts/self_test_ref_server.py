@@ -11,27 +11,29 @@ import sys
 HOST = '0.0.0.0' 
 
 # C++ config.yaml의 RefClient.port와 일치해야 함
-PORT = 2284
+PORT = 2287
 
 # C++이 기대하는 데이터 형식 (Big-Endian, 12-ch, uint16_t)
-FORMAT_STRING = '>12H'
-NUM_INTEGERS = 12
+FORMAT_STRING = '>20H'
+NUM_INTEGERS = 20
 BUFFER_SIZE = NUM_INTEGERS * 2 # 24 bytes
 
 # 보낼 레퍼런스 값 (예: 12개 채널 모두 101.32 kPa)
 # C++ 코드는 0.01 스케일을 적용하므로 10132를 보내야 101.32가 됨
 
 ref_values = [
-    15132,   15132,  15132,  15132,  # 채널 0, 1, 2, 3
-    15132,  15132,  15132,  15132,  # 채널 4, 5, 6, 7
-    5132,  5132,  5132,  5132   # 채널 8, 9, 10, 11
+    151.32,   151.32,  151.32,  151.32,  # 채널 0, 1, 2, 3
+    151.32,  151.32,  151.32,  151.32,  # 채널 4, 5, 6, 7
+    51.32,  51.32,  51.32,  51.32   # 채널 8, 9, 10, 11
 ]
-# ref_values = [
-#     11132,   11132,  11132,  11132,  # 채널 0, 1, 2, 3
-#     11132,  11132,  11132,  11132,  # 채널 4, 5, 6, 7
-#     9132,  9132,  9132,  9132   # 채널 8, 9, 10, 11
-# ]
-# --- ---
+
+ref_values = [int(x * 327.675) for x in ref_values]
+
+volume_values = [500, 1500, 500, 1500, 100, 200, 100, 200]
+
+volume_values = [int(x * 32.7675) for x in volume_values]
+
+out_values = ref_values + volume_values
 
 def start_server():
     print(f"TCP 레퍼런스 서버 시작 중... ({HOST}:{PORT})")
@@ -67,9 +69,9 @@ def start_server():
                         # ref_values[0] = 9000
                         
                         # 데이터를 24바이트 바이너리로 압축
-                        packed_data = struct.pack(FORMAT_STRING, *ref_values)
+                        packed_data = struct.pack(FORMAT_STRING, *out_values)
                         
-                        print(f"전송: {ref_values[0]} ... (총 {len(packed_data)} 바이트)")
+                        print(f"전송: {out_values[0]} ... (총 {len(packed_data)} 바이트)")
                         
                         # 데이터 전송
                         conn.sendall(packed_data)

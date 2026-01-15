@@ -39,31 +39,118 @@ pp_controller:
     Sensor_calibration:
       atm_offset: 101.325
       b0:
-        "0": { offset: 998.0,  gain: 0.250 }
-        "1": { offset: 989.0,   gain: 0.250 }
+        "0": { offset: 995.0,  gain: 0.250 }
+        "1": { offset: 990.0,   gain: 0.250 }
         "2": { offset: 998.0,  gain: 0.250 }
-        "3": { offset: 1006.0,  gain: 0.250 }
+        "3": { offset: 1009.0,  gain: 0.250 }
       b1:
-        "0": { offset: 969.0,   gain: 0.250 }
-        "1": { offset: 997.0,  gain: 0.250 }
-        "2": { offset: 1007.0,  gain: 0.250 }
-        "3": { offset: 997.0,   gain: 0.250 }
+        "0": { offset: 968.0,   gain: 0.250 }
+        "1": { offset: 996.0,  gain: 0.250 }
+        "2": { offset: 996.0,  gain: 0.250 }
+        "3": { offset: 994.0,   gain: 0.250 }
       b2:
-        "0": { offset: 952.0,   gain: -0.02525 }
-        "1": { offset: 962.0,   gain: -0.02525 }
-        "2": { offset: 946.0,   gain: -0.02525 }
-        "3": { offset: 974.0,   gain: -0.02525 }
-        "4": { offset: 667.0,   gain: 0.3150 }    # pos line (핀20)
-        "5": { offset: 650.0,   gain: -0.0378 }   # neg line (핀21)
+        "0": { offset: 930.0,   gain: -0.02525 }
+        "1": { offset: 960.0,   gain: -0.02525 }
+        "2": { offset: 951.0,   gain: -0.02525 }
+        "3": { offset: 973.0,   gain: -0.02525 }
+        "4": { offset: 666.0,   gain: 0.3150 }    # pos line (핀20)
+        "5": { offset: 666.0,   gain: -0.0378 }   # neg line (핀21)
         "6": { offset: 402.0,   gain: 0.6800 }    # macro line (핀22)
+
+    channel_config:
+      ch0:
+        pos_ki_micro: 2.0 
+        pos_ki_macro: 2.0 
+        pos_ki_atm: 10.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.6
+      ch1:
+        pos_ki_micro: 2.0 
+        pos_ki_macro: 2.0 
+        pos_ki_atm: 10.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.6
+      ch2:
+        pos_ki_micro: 2.0 
+        pos_ki_macro: 2.0 
+        pos_ki_atm: 10.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.6
+      ch3:
+        pos_ki_micro: 2.0 
+        pos_ki_macro: 2.0 
+        pos_ki_atm: 10.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.6
+      ch4:
+        pos_ki_micro: 2.0 
+        pos_ki_macro: 2.0 
+        pos_ki_atm: 10.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.6
+      ch5:
+        pos_ki_micro: 2.0 
+        pos_ki_macro: 2.0 
+        pos_ki_atm: 10.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.6
+      ch6:
+        pos_ki_micro: 2.0 
+        pos_ki_macro: 2.0 
+        pos_ki_atm: 10.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.6
+      ch7:
+        pos_ki_micro: 2.0 
+        pos_ki_macro: 2.0 
+        pos_ki_atm: 10.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.6
+      ch8:
+        neg_ki_micro: 2.0 
+        neg_ki_macro: 2.0 
+        neg_ki_atm: 10.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.6
+      ch9:
+        neg_ki_micro: 2.0 
+        neg_ki_macro: 2.0 
+        neg_ki_atm: 10.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.6
+      ch10:
+        neg_ki_micro: 2.0 
+        neg_ki_macro: 2.0 
+        neg_ki_atm: 10.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.6
+      ch11:
+        neg_ki_micro: 2.0 
+        neg_ki_macro: 2.0 
+        neg_ki_atm: 10.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.6
 
     RefTcp:
       enable: true
       # host: "169.254.46.254"
       host: '127.0.0.1'
-      port: 2284
-      expect_n: 12
-      scale: 0.01
+      port: 2287
+      expect_n: 20
+      pressure_scale: 0.0030518
+      volume_scale: 0.030518
 
     LinePID:
       pos:
@@ -83,14 +170,6 @@ pp_controller:
       out_min: 0.0
       out_max: 100.0
 
-    Reference_parameters:
-      frequency: 1000
-
-    PWM_parameters:
-      frequency: 1000
-      pid_pos_index: 18
-      pid_neg_index: 19
-
     MPC_parameters:
       NP: 20
       n_x: 1
@@ -98,33 +177,6 @@ pp_controller:
       Ts: 0.004
       Q_values: 10.0
       R_values: 10.0
-      # pos_ku_micro: 30.0
-      pos_ku_micro: 0.0
-      # pos_ku_macro: 15.0
-      pos_ku_macro: 0.0
-      # pos_ku_atm: 8.0
-      pos_ku_atm: 0.0
-      # neg_ku_micro: 15.0
-      neg_ku_micro: 0.0
-      # neg_ku_macro: 6.0
-      neg_ku_macro: 0.0
-      # neg_ku_atm: 6.0
-      neg_ku_atm: 0.0
-
-      # pos_ki_micro: 5.0
-      # pos_ki_macro: 5.0
-      # pos_ki_atm: 5.0
-      # neg_ki_micro: 10.0
-      # neg_ki_macro: 10.0
-      # neg_ki_atm: 20.0
-      
-      pos_ki_micro: 1.0
-      pos_ki_macro: 1.0
-      pos_ki_atm: 1.0
-      neg_ki_micro: 1.0
-      neg_ki_macro: 1.0
-      neg_ki_atm: 1.0
-      macro_gain_multiplier: 0.9
 
       ejector_k: 0.005         
       ejector_p_limit: 11.325  
@@ -132,29 +184,41 @@ pp_controller:
       leakage_u_pos: 0.0
       leakage_u_neg: 0.0
 
-      target_time_constant: 5.0
+      target_time_constant: 10.0
+
+      macro_threshold : 40.0
 
     # test volume
     channel_volume:
-      ch0_ml: 3.0
-      ch1_ml: 3.0
-      ch2_ml: 2.5
-      ch3_ml: 2.5
-      ch4_ml: 9.0
-      ch5_ml: 10.0
+      # ch0_ml: 2.0
+      # ch1_ml: 2.0
+      # ch2_ml: 0.0001
+      # ch3_ml: 1.5
+      # ch4_ml: 6.0
+      # ch5_ml: 5.0
       # ch6_ml: 1.250
-      ch6_ml: 1.250
-      # ch7_ml: 0.750
-      ch7_ml: 0.750
-      ch8_ml: 10.0
-      ch9_ml: 10.0
-      ch10_ml: 10.0
-      ch11_ml: 10.0
+      # ch7_ml: 1.250
+      # ch8_ml: 10.0
+      # ch9_ml: 10.0
+      # ch10_ml: 10.0
+      # ch11_ml: 10.0
+            #positive
+      ch0_ml: 500 # SORO
+      ch1_ml: 500 # SORO
+      ch2_ml: 300 # SORO
+      ch3_ml: 300 # SORO
+      ch4_ml: 600 # CAMAS
+      ch5_ml: 600 # CAMAS
+      ch6_ml: 50 # CAMAS
+      ch7_ml: 50 # CAMAS
+      #negative 
+      ch8_ml: 500 # SORO
+      ch9_ml: 500 # SORO
+      ch10_ml: 300 # SORO
+      ch11_ml: 300 # SORO
+
 
     system_parameters:
-      sensor_print: false
-      reference_print: false
-      pwm_print: false
       valve_operate: true
 
     MacroSwitch:

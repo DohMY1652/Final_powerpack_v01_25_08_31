@@ -135,8 +135,6 @@ public:
     float A_lin{1.0f};
     std::array<float,3> B_lin{1.0f, 0.0f, 0.0f};
     bool  is_positive{true};
-    float pos_ku_micro{1.0f}, pos_ku_macro{1.0f}, pos_ku_atm{1.0f};
-    float neg_ku_micro{1.0f}, neg_ku_macro{1.0f}, neg_ku_atm{1.0f};
     float pos_ki_micro{0.0f}, pos_ki_macro{0.0f}, pos_ki_atm{0.0f};
     float neg_ki_micro{0.0f}, neg_ki_macro{0.0f}, neg_ki_atm{0.0f};
     float ref_value{0.0f};
@@ -145,13 +143,17 @@ public:
     float u_abs_min{0.0f};
     float u_abs_max{100.0f};
     float volume_m3{1.0e-5f};
-    float macro_gain_multiplier{1.0f};
     float last_ref_value_ = 101.325f;
     float ejector_k = 0.005f;       
     float ejector_p_limit = 11.325f; 
     float leakage_u_pos = 0.0f; 
     float leakage_u_neg = 0.0f; 
     float target_time_constant = 0.2f;
+    float macro_threshold = 30.0f;
+    float k0{0.0002181f};
+    float k1{0.007379f};
+    float k2{0.5191f};
+
 
   };
 
@@ -159,10 +161,11 @@ public:
   explicit AcadosMpc(const Config& cfg);
   void set_qp_solver(std::shared_ptr<QP> qp);
   inline void set_ref_value(float ref_kpa) { cfg_.ref_value = ref_kpa; }
+  inline void set_volume(float vol_m3) { cfg_.volume_m3 = std::max(1e-12f, vol_m3); }
   void update_linearization(const SensorSnapshot& s, float x_ref, const Eigen::RowVector3f& u_ref);
   void set_AB_sequences(const std::vector<float>& A_seq, const std::vector<Eigen::RowVector3f>& B_seq);
   void set_AB_constant(float A_scalar, const Eigen::RowVector3f& B_row);
-  void solve(const SensorSnapshot& s, float dt_ms, std::array<uint16_t, MPC_OUT_DIM>& out3);
+  void solve(const SensorSnapshot& s, float dt_ms, std::array<uint16_t, MPC_OUT_DIM>& out3, float current_time_sec);
   const Config& cfg() const { return cfg_; }
 
   float current_P_now_   = 101.325f;
@@ -172,7 +175,7 @@ public:
 
 private:
   float read_current_pressure(const SensorSnapshot& s) const;
-  std::array<float,3> compute_input_reference(float P_now, float P_micro, float P_macro,float dt_sec);
+  std::array<float,3> compute_input_reference(float P_now, float P_micro, float P_macro, float dt_sec, float current_time_sec);
   void build_mpc_qp(const std::vector<float>& A_seq, const std::vector<Eigen::RowVector3f>& B_seq, float P_now, const std::vector<float>& P_ref, Eigen::MatrixXf& P, Eigen::VectorXf& q, Eigen::MatrixXf& A_con, Eigen::VectorXf& LL, Eigen::VectorXf& UL);
   std::array<float,3> solve_qp_first_step(const Eigen::MatrixXf& P, const Eigen::VectorXf& q, const Eigen::MatrixXf& A_con, const Eigen::VectorXf& LL, const Eigen::VectorXf& UL);
 
@@ -210,9 +213,10 @@ public:
         std::string host = "169.254.46.254";
         int port = 2272;
         int expect_n = 12; 
-        double scale = 0.01; 
+        double pressure_scale = 1.0 / 327.675; 
+        double volume_scale = 1.0 / 32.7675; 
     };
-    using Callback = std::function<void(const std::array<double, 12>&)>;
+    using Callback = std::function<void(const std::vector<double>&)>;
 
     RefTcpClient(const Config& cfg, Callback cb)
     : cfg_(cfg), cb_(std::move(cb)) {
@@ -241,8 +245,9 @@ private:
         const size_t BUFFER_SIZE = NUM_INTEGERS * BYTES_PER_INT; 
         
         std::vector<char> buffer(BUFFER_SIZE); 
-        std::array<double, 12> out_values; 
+        std::vector<double> out_values(NUM_INTEGERS);
 
+        
         while (!stop_.load()) {
             client_fd_ = -1; 
             try {
@@ -284,7 +289,15 @@ private:
                             std::memcpy(&net_val, ptr, BYTES_PER_INT);
                             ptr += BYTES_PER_INT;
                             uint16_t host_val = ntohs(net_val); 
-                            out_values[i] = static_cast<double>(host_val) * cfg_.scale;
+                            
+                            double scale_factor;
+                            if (i < 12) {
+                                scale_factor = cfg_.pressure_scale;
+                            } else {
+                                scale_factor = cfg_.volume_scale;
+                            }
+
+                            out_values[i] = static_cast<double>(host_val) * scale_factor;
                         }
                         cb_(out_values);
                     }
@@ -339,13 +352,29 @@ private:
   bool enable_thread_pinning_{true};
   std::vector<int64_t> cpu_pins_param_;
   
-  // [수정됨] 양압 채널의 개수를 저장할 변수
   int num_positive_channels_{8};
+
+  struct ChannelConfig {
+    double pos_ki_micro{0.0};
+    double pos_ki_macro{0.0};
+    double pos_ki_atm{0.0};
+    double neg_ki_micro{0.0};
+    double neg_ki_macro{0.0};
+    double neg_ki_atm{0.0};
+
+    double k0{0.0002181};
+    double k1{0.007379};
+    double k2{0.7191};
+  };
+
+  std::array<ChannelConfig, MPC_TOTAL> channel_configs_;
 
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::Subscription<std_msgs::msg::UInt16MultiArray>::SharedPtr sub_b0_, sub_b1_, sub_b2_;
   rclcpp::Publisher<std_msgs::msg::UInt16MultiArray>::SharedPtr pub_b0_, pub_b1_, pub_b2_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_mpc_refs_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_vol_refs_ml_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_active_vols_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_kpa_b0_, pub_kpa_b1_, pub_kpa_b2_;
   std::unique_ptr<ThreadPool> pool_;
   std::mutex sensors_mtx_;
@@ -369,34 +398,24 @@ private:
   std::vector<std::unique_ptr<AcadosMpc>> mpcs_;
   uint64_t tick_{0};
   SensorCalib sensor_;
-  int  ref_freq_hz_{1000};
-  int  pwm_freq_hz_{1000};
-  int  pid_pos_index_{18};
-  int  pid_neg_index_{19};
   struct MpcYaml {
     int   NP{5}; int n_x{1}; int n_u{3}; double Ts{0.01}; double Q_value{10.0}; double R_value{1.0};
-    double pos_ku_micro{0.5}, pos_ku_macro{0.5}, pos_ku_atm{2.0};
-    double neg_ku_micro{3.0}, neg_ku_macro{3.0}, neg_ku_atm{6.0};
-    double pos_ki_micro{0.0}, pos_ki_macro{0.0}, pos_ki_atm{0.0};
-    double neg_ki_micro{0.0}, neg_ki_macro{0.0}, neg_ki_atm{0.0};
-    double macro_gain_multiplier{1.0};
     double ejector_k{0.005};       
     double ejector_p_limit{11.325};
     double leakage_u_pos{0.0};
     double leakage_u_neg{0.0};
     double target_tc{0.2};
+    double macro_threshold{30.0};
   } mpc_;
   
   std::array<double, MPC_TOTAL> vol_ml_;
 
-  bool sys_sensor_print_{true}; 
-  bool sys_reference_print_{true};
-  bool sys_pwm_print_{true};
   bool sys_valve_operate_{false};
   RefTcpClient::Config ref_client_cfg_;
   std::unique_ptr<RefTcpClient> ref_client_;
   std::mutex mpc_ref_mtx_;
   std::array<double, MPC_TOTAL> mpc_ref_kpa_{};
+  std::array<double, 8> volume_ref_ml_{};
   struct PidGains { double kp{0.5}, ki{0.0}, kd{0.0}, ref{150.0}; };
   struct PidState { double integ{0.0}; double prev_err{0.0}; bool has_prev{false}; };
   PidGains pid_pos_;
@@ -411,4 +430,7 @@ private:
 
   int log_channel_id_{-1};      
   std::ofstream log_file_;      
+
+  std::chrono::steady_clock::time_point start_time_;
+  double elapsed_time_sec_ = 0.0;
 };
