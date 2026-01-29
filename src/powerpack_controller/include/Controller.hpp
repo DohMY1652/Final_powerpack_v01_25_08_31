@@ -6,6 +6,7 @@
 
 #include <Eigen/Dense>
 
+#include <deque> // [필수] deque 헤더 추가
 #include <vector>
 #include <array>
 #include <mutex>
@@ -143,6 +144,8 @@ public:
     float u_abs_min{0.0f};
     float u_abs_max{100.0f};
     float volume_m3{1.0e-5f};
+    float prev_vol_m3{1.0e-5f};
+
     float last_ref_value_ = 101.325f;
     float ejector_k = 0.005f;       
     float ejector_p_limit = 11.325f; 
@@ -150,11 +153,10 @@ public:
     float leakage_u_neg = 0.0f; 
     float target_time_constant = 0.2f;
     float macro_threshold = 30.0f;
+    float actuating_threshold = 5.0f;
     float k0{0.0002181f};
     float k1{0.007379f};
     float k2{0.5191f};
-
-
   };
 
 
@@ -162,6 +164,7 @@ public:
   void set_qp_solver(std::shared_ptr<QP> qp);
   inline void set_ref_value(float ref_kpa) { cfg_.ref_value = ref_kpa; }
   inline void set_volume(float vol_m3) { cfg_.volume_m3 = std::max(1e-12f, vol_m3); }
+  inline void set_prev_volume(float vol_m3) { cfg_.prev_vol_m3 = std::max(1e-12f, vol_m3); }
   void update_linearization(const SensorSnapshot& s, float x_ref, const Eigen::RowVector3f& u_ref);
   void set_AB_sequences(const std::vector<float>& A_seq, const std::vector<Eigen::RowVector3f>& B_seq);
   void set_AB_constant(float A_scalar, const Eigen::RowVector3f& B_row);
@@ -192,6 +195,10 @@ private:
   float neg_error_integral_{0.0f};
 
   float last_error_{0.0f};
+
+  // [추가됨] 부피 변화율 필터링을 위한 버퍼 및 윈도우 크기
+  std::deque<float> vol_dot_buffer_;
+  const size_t vol_dot_window_size_ = 5;
 };
 
 struct SensorCalib {
@@ -406,6 +413,7 @@ private:
     double leakage_u_neg{0.0};
     double target_tc{0.2};
     double macro_threshold{30.0};
+    double actuating_threshold{5.0};
   } mpc_;
   
   std::array<double, MPC_TOTAL> vol_ml_;
@@ -430,6 +438,8 @@ private:
 
   int log_channel_id_{-1};      
   std::ofstream log_file_;      
+
+  std::array<double, MPC_TOTAL> prev_vol_m3_{};
 
   std::chrono::steady_clock::time_point start_time_;
   double elapsed_time_sec_ = 0.0;

@@ -98,7 +98,14 @@ AcadosMpc::AcadosMpc(const Config& cfg) : cfg_(cfg) {
   R_.setZero(cfg_.n_u * cfg_.NP, cfg_.n_u * cfg_.NP);
   for (int i = 0; i < cfg_.n_x * cfg_.NP; ++i) Q_(i, i) = cfg_.Q_value;
   for (int i = 0; i < cfg_.n_u * cfg_.NP; ++i) R_(i, i) = cfg_.R_value;
+
+  vol_dot_buffer_.clear();
+  for(size_t i=0; i<vol_dot_window_size_; ++i) {
+      vol_dot_buffer_.push_back(0.0f);
+  }
+
 }
+
 
 void AcadosMpc::set_qp_solver(std::shared_ptr<QP> qp) { qp_ = std::move(qp); }
 
@@ -242,11 +249,26 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
   const double Rgas     = 287.0;
   const double TempK    = 293.15;
 
-  const double Volume   = std::max(1e-12, (double)cfg_.volume_m3);
+  const double current_vol   = std::max(1e-12, (double)cfg_.volume_m3);
+  const double prev_vol = std::max(1e-12, (double)cfg_.prev_vol_m3);
 
   const float k0 = cfg_.k0;
   const float k1 = cfg_.k1;
   const float k2 = cfg_.k2;
+
+  float raw_vol_dot = float((current_vol - prev_vol) / dt_sec);
+
+  vol_dot_buffer_.push_back(raw_vol_dot);
+  if (vol_dot_buffer_.size() > vol_dot_window_size_) {
+      vol_dot_buffer_.pop_front(); // 가장 오래된 데이터 삭제
+  }
+
+  float sum_vol_dot = 0.0f;
+  for (float val : vol_dot_buffer_) {
+      sum_vol_dot += val;
+  }
+  
+  float vol_dot = sum_vol_dot / (float)vol_dot_buffer_.size();
 
   float target_time_constant = cfg_.target_time_constant;
   if (target_time_constant <= 0.001f) target_time_constant = 0.2f;
@@ -257,17 +279,19 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
   float err = Pref - P_now;
   
   float P_dot = abs(Pref - P_now) * 1000 / target_time_constant; //[Pa/sec]
-  float m_dot =  P_dot  * Volume / (Rgas * TempK) / lpm2kgps; //[LPM]
+  float m_dot_pressure =  P_dot  * current_vol / (Rgas * TempK) / lpm2kgps; //[LPM]
+  float m_dot_volume = P_now * 1000 * vol_dot / (Rgas * TempK) / lpm2kgps; //[LPM]
+  
   
   if (cfg_.is_positive) {
     if ((err > 0.0f && pos_error_integral_ < 0.0f) || (err < 0.0f && pos_error_integral_ > 0.0f)) {
-        pos_error_integral_ = 0.0f;
+      pos_error_integral_ = 0.0f;
     }
     pos_error_integral_ += err * dt_sec;
-
+    
   }else {
     if ((err > 0.0f && neg_error_integral_ > 0.0f) || (err < 0.0f && neg_error_integral_ < 0.0f)) {
-        neg_error_integral_ = 0.0f;
+      neg_error_integral_ = 0.0f;
     }
     neg_error_integral_ -= err * dt_sec;
   }
@@ -275,40 +299,95 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
   const float ki_mi = cfg_.is_positive ? cfg_.pos_ki_micro : cfg_.neg_ki_micro;
   const float ki_ma = cfg_.is_positive ? cfg_.pos_ki_macro : cfg_.neg_ki_macro;
   const float ki_at = cfg_.is_positive ? cfg_.pos_ki_atm   : cfg_.neg_ki_atm;
-
+  
   float u_mi_req = 0.f, u_ma_req = 0.f, u_at_req = 0.f;
+ 
+  
+  // m_dot_total이 조건일 때
+  ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+   if (cfg_.is_positive) { 
+    if ((m_dot_pressure + m_dot_volume) > 0.f) { 
+      u_mi_req = (abs(m_dot_pressure + m_dot_volume) / sqrt(2 * P_micro * std::max(0.001f,(P_micro - P_now))) + k2 - k0 * P_micro) / k1 + ki_mi * pos_error_integral_;
 
-  if (cfg_.is_positive) { 
-    if (err > 0.f) { 
-      u_mi_req = (m_dot / sqrt(2 * P_micro * std::max(0.001f,(P_micro - P_now))) + k2 - k0 * P_micro) / k1 + ki_mi * pos_error_integral_;
       u_at_req = 0.f;
       if (abs(err) >= cfg_.macro_threshold) {
-        u_ma_req = (m_dot / sqrt(2 * P_macro * std::max(0.001f,(P_macro - P_now))) + k2 - k0 * P_macro) / k1 + ki_ma * pos_error_integral_;
+        u_ma_req = (abs(m_dot_pressure + m_dot_volume) / sqrt(2 * P_macro * std::max(0.001f,(P_macro - P_now))) + k2 - k0 * P_macro) / k1 + ki_ma * pos_error_integral_;
       } else {
         u_ma_req = 0;
       }
-    }
-    else { 
+    } else if (abs(m_dot_pressure + m_dot_volume) > (-1 * cfg_.actuating_threshold)) {
       u_mi_req = 0.f;
       u_ma_req = 0.f;
-      u_at_req = (m_dot / sqrt(2 * P_now * std::max(0.001f,(P_now - P_abs_atm))) + k2 - k0 * P_now) / k1 + ki_at * abs(pos_error_integral_);
+      u_at_req = 0.f;
+    } else { 
+      u_mi_req = 0.f;
+      u_ma_req = 0.f;
+      u_at_req = (abs(m_dot_pressure + m_dot_volume) / sqrt(2 * P_now * std::max(0.001f,(P_now - P_abs_atm))) + k2 - k0 * P_now) / k1 + ki_at * abs(pos_error_integral_);
     }
   } else { 
-    if (err < 0.f) { 
-      u_mi_req = (m_dot / sqrt(2 * P_now * std::max(0.001f,(P_now - P_micro))) + k2 - k0 * P_now) / k1 + ki_mi * neg_error_integral_;
+    if ((m_dot_pressure + m_dot_volume) < 0.f) { 
+      u_mi_req = (abs(m_dot_pressure + m_dot_volume)  / sqrt(2 * P_now * std::max(0.001f,(P_now - P_micro))) + k2 - k0 * P_now) / k1 + ki_mi * neg_error_integral_;
       u_at_req = 0.f;
       if (abs(err) >=  cfg_.macro_threshold) {
-        u_ma_req = (m_dot / sqrt(2 * P_macro * std::max(0.001f,(P_macro - P_now))) + k2 - k0 * P_macro) / k1 + ki_ma * pos_error_integral_;
+        u_ma_req = (abs(m_dot_pressure + m_dot_volume)  / sqrt(2 * P_macro * std::max(0.001f,(P_macro - P_now))) + k2 - k0 * P_macro) / k1 + ki_ma * pos_error_integral_;
       } else {
         u_ma_req = 0;
       }
-    }
-    else { 
+    } else if ((m_dot_pressure + m_dot_volume) < cfg_.actuating_threshold){
       u_mi_req = 0.f;
       u_ma_req = 0.f;
-      u_at_req = (m_dot / sqrt(2 * P_abs_atm * std::max(0.001f,(P_abs_atm - P_now))) + k2 - k0 * P_abs_atm) / k1 + ki_at * abs(neg_error_integral_);
+      u_at_req = 0.f;
+    } else { 
+      u_mi_req = 0.f;
+      u_ma_req = 0.f;
+      u_at_req = (abs(m_dot_pressure + m_dot_volume)  / sqrt(2 * P_abs_atm * std::max(0.001f,(P_abs_atm - P_now))) + k2 - k0 * P_abs_atm) / k1 + ki_at * abs(neg_error_integral_);
     }
   }
+  ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+  // err의 부호가 조건일 때
+  ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  // if (cfg_.is_positive) { 
+  //   if (err > 0.f) { 
+  //     u_mi_req = ((abs(m_dot_pressure) + m_dot_volume) / sqrt(2 * P_micro * std::max(0.001f,(P_micro - P_now))) + k2 - k0 * P_micro) / k1 + ki_mi * pos_error_integral_;
+
+  //     u_at_req = 0.f;
+  //     if (abs(err) >= cfg_.macro_threshold) {
+  //       u_ma_req = ((abs(m_dot_pressure) + m_dot_volume) / sqrt(2 * P_macro * std::max(0.001f,(P_macro - P_now))) + k2 - k0 * P_macro) / k1 + ki_ma * pos_error_integral_;
+  //     } else {
+  //       u_ma_req = 0;
+  //     }
+  //   } else if (err > (-1 * cfg_.actuating_threshold)) {
+  //     u_mi_req = 0.f;
+  //     u_ma_req = 0.f;
+  //     u_at_req = 0.f;
+  //   } else { 
+  //     u_mi_req = 0.f;
+  //     u_ma_req = 0.f;
+  //     u_at_req = ((abs(m_dot_pressure) - m_dot_volume) / sqrt(2 * P_now * std::max(0.001f,(P_now - P_abs_atm))) + k2 - k0 * P_now) / k1 + ki_at * abs(pos_error_integral_);
+  //   }
+  // } else { 
+  //   if (err < 0.f) { 
+  //     u_mi_req = ((abs(m_dot_pressure) - m_dot_volume)  / sqrt(2 * P_now * std::max(0.001f,(P_now - P_micro))) + k2 - k0 * P_now) / k1 + ki_mi * neg_error_integral_;
+  //     u_at_req = 0.f;
+  //     if (abs(err) >=  cfg_.macro_threshold) {
+  //       u_ma_req = ((abs(m_dot_pressure) - m_dot_volume)  / sqrt(2 * P_macro * std::max(0.001f,(P_macro - P_now))) + k2 - k0 * P_macro) / k1 + ki_ma * pos_error_integral_;
+  //     } else {
+  //       u_ma_req = 0;
+  //     }
+  //   } else if (err < cfg_.actuating_threshold){
+  //     u_mi_req = 0.f;
+  //     u_ma_req = 0.f;
+  //     u_at_req = 0.f;
+  //   } else { 
+  //     u_mi_req = 0.f;
+  //     u_ma_req = 0.f;
+  //     u_at_req = ((abs(m_dot_pressure) + m_dot_volume)  / sqrt(2 * P_abs_atm * std::max(0.001f,(P_abs_atm - P_now))) + k2 - k0 * P_abs_atm) / k1 + ki_at * abs(neg_error_integral_);
+  //   }
+  // }
+  ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 
   float u_mi_req_clamped =  std::clamp(u_mi_req, 0.0f, 100.0f);
   float u_ma_req_clamped =  std::clamp(u_ma_req, 0.0f, 100.0f);
@@ -522,6 +601,7 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   mpc_.leakage_u_neg = get_param_or<double>(this, "MPC_parameters.leakage_u_neg", 0.0);
   mpc_.target_tc = get_param_or<double>(this, "MPC_parameters.target_time_constant", 0.2);
   mpc_.macro_threshold = get_param_or<double>(this, "MPC_parameters.macro_threshold", 30.0);
+  mpc_.actuating_threshold = get_param_or<double>(this, "MPC_parameters.actuating_threshold", 5.0);
 
 
   auto get_ml = [&](const char* key, double def_ml){
@@ -530,6 +610,10 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   for(int i=0; i<MPC_TOTAL; ++i) {
       std::string key = "ch" + std::to_string(i) + "_ml";
       vol_ml_[i] = get_ml(key.c_str(), 100.0);
+  }
+
+  for(int i = 0; i < MPC_TOTAL; ++i) {
+      prev_vol_m3_[i] = vol_ml_[i] * 1.0e-6;
   }
 
   for(int i = 0; i < MPC_TOTAL; ++i) {
@@ -918,6 +1002,9 @@ void Controller::on_timer() {
       // mL -> m^3 변환 후 MPC에 설정
       mpc->set_volume(static_cast<float>(target_vol_ml * 1e-6));
 
+      double prev_vol = prev_vol_m3_[gid]; 
+      mpc->set_prev_volume(static_cast<float>(prev_vol));
+
       float ref_kpa = 0.f;
       if (gid >= 0 && gid < MPC_TOTAL) ref_kpa = (float)ref_snapshot[(size_t)gid];
       mpc->set_ref_value(ref_kpa);
@@ -1025,6 +1112,11 @@ void Controller::on_timer() {
   }
 
   publish_cmds();
+
+  for(int i = 0; i < MPC_TOTAL; ++i) {
+      prev_vol_m3_[i] = final_active_vols_ml[i] * 1.0e-6;
+  }
+
   ++tick_;
 }
 
