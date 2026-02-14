@@ -3,6 +3,7 @@
  * @brief [최종 하이브리드 노드 - 시뮬레이션 기능 포함]
  * - use_hardware 파라미터로 하드웨어 연결 없이 로직 테스트 가능
  * - Board 3 (Analog) + Board 4 (ADC) 데이터 융합 로직 포함
+ * - [수정] PWM 4095 -> 1023 매핑 로직 추가
  */
 
 #include "TeensyBridge.hpp"
@@ -22,6 +23,18 @@
 #include <random> // 시뮬레이션용 난수 생성
 
 using namespace std::chrono_literals;
+
+// ==========================================
+// [추가] 헬퍼 함수: 4095 -> 1023 매핑
+// ==========================================
+static uint16_t map_4095_to_1023(uint16_t val) {
+  // 1. 입력값이 4095를 넘으면 4095로 제한 (Safety)
+  if (val > 4095) val = 4095;
+
+  // 2. 매핑 계산: (Input * 1023) / 4095
+  // uint32_t 캐스팅으로 곱셈 오버플로우 방지
+  return static_cast<uint16_t>((static_cast<uint32_t>(val) * 1023) / 4095);
+}
 
 // 체크섬 계산 헬퍼 함수 (단순 XOR)
 static uint8_t calc_xor_checksum(const uint8_t* data, size_t len) {
@@ -136,9 +149,9 @@ void TeensyBridge::build_virtual_boards() {
   boards_.resize(count);
 
   // 센서 퍼블리셔 생성
-  sensor_pub_b0_ = this->create_publisher<std_msgs::msg::UInt16MultiArray>("teensy/b0/sensors", 1);
-  sensor_pub_b1_ = this->create_publisher<std_msgs::msg::UInt16MultiArray>("teensy/b1/sensors", 1);
-  sensor_pub_b2_ = this->create_publisher<std_msgs::msg::UInt16MultiArray>("teensy/b2/sensors", 1);
+  sensor_pub_b0_ = this->create_publisher<std_msgs::msg::UInt16MultiArray>("board/b0/sensors", 1);
+  sensor_pub_b1_ = this->create_publisher<std_msgs::msg::UInt16MultiArray>("board/b1/sensors", 1);
+  sensor_pub_b2_ = this->create_publisher<std_msgs::msg::UInt16MultiArray>("board/b2/sensors", 1);
 
   for (size_t i = 0; i < count; ++i) {
     auto b = std::make_unique<Board>();
@@ -151,12 +164,12 @@ void TeensyBridge::build_virtual_boards() {
     b->fd = -1; // 가상 FD
 
     const std::string tag = "b" + std::to_string(i);
-    b->stats_pub  = this->create_publisher<std_msgs::msg::String>("teensy/" + tag + "/comm_stats", 5);
+    b->stats_pub  = this->create_publisher<std_msgs::msg::String>("board/" + tag + "/comm_stats", 5);
 
     // PWM 보드 (ID 1,2,3) -> PWM 구독
     if (b->board_id >= 1 && b->board_id <= 3) {
       b->cmd_sub = this->create_subscription<std_msgs::msg::UInt16MultiArray>(
-        "teensy/" + tag + "/pwm_cmd", 5,
+        "board/" + tag + "/pwm_cmd", 5,
         [this, i](const std_msgs::msg::UInt16MultiArray::SharedPtr msg){ this->on_cmd(i, msg); });
       RCLCPP_INFO(this->get_logger(), "[Virtual b%zu] ID=%u (PWM Board)", i, b->board_id);
     } 
@@ -167,7 +180,7 @@ void TeensyBridge::build_virtual_boards() {
     }
 
     b->monitor_sub = this->create_subscription<std_msgs::msg::Bool>(
-      "teensy/" + tag + "/monitor_enable", 5,
+      "board/" + tag + "/monitor_enable", 5,
       [this, i](const std_msgs::msg::Bool::SharedPtr msg){ this->on_monitor_enable(i, msg); });
 
     boards_[i] = std::move(b);
@@ -266,9 +279,9 @@ void TeensyBridge::autodetect_and_build_boards() {
   // 실제 객체 생성
   boards_.clear();
   boards_.resize(opened.size());
-  sensor_pub_b0_ = this->create_publisher<std_msgs::msg::UInt16MultiArray>("teensy/b0/sensors", 5);
-  sensor_pub_b1_ = this->create_publisher<std_msgs::msg::UInt16MultiArray>("teensy/b1/sensors", 5);
-  sensor_pub_b2_ = this->create_publisher<std_msgs::msg::UInt16MultiArray>("teensy/b2/sensors", 5);
+  sensor_pub_b0_ = this->create_publisher<std_msgs::msg::UInt16MultiArray>("board/b0/sensors", 5);
+  sensor_pub_b1_ = this->create_publisher<std_msgs::msg::UInt16MultiArray>("board/b1/sensors", 5);
+  sensor_pub_b2_ = this->create_publisher<std_msgs::msg::UInt16MultiArray>("board/b2/sensors", 5);
 
   for (size_t j = 0; j < opened.size(); ++j) {
     int slot = assigned[j];
@@ -283,18 +296,18 @@ void TeensyBridge::autodetect_and_build_boards() {
     opened[j].fd = -1; 
 
     const std::string tag = "b" + std::to_string(slot);
-    b->stats_pub  = this->create_publisher<std_msgs::msg::String>("teensy/" + tag + "/comm_stats", 5);
+    b->stats_pub  = this->create_publisher<std_msgs::msg::String>("board/" + tag + "/comm_stats", 5);
 
     if (b->board_id <= 3) {
       b->cmd_sub = this->create_subscription<std_msgs::msg::UInt16MultiArray>(
-        "teensy/" + tag + "/pwm_cmd", 5,
+        "board/" + tag + "/pwm_cmd", 5,
         [this, slot](const std_msgs::msg::UInt16MultiArray::SharedPtr msg){ this->on_cmd(slot, msg); });
     } else if (b->board_id == 4) {
       b->is_adc_board = true;
     }
     
     b->monitor_sub = this->create_subscription<std_msgs::msg::Bool>(
-      "teensy/" + tag + "/monitor_enable", 5,
+      "board/" + tag + "/monitor_enable", 5,
       [this, slot](const std_msgs::msg::Bool::SharedPtr msg){ this->on_monitor_enable(slot, msg); });
 
     boards_[slot] = std::move(b);
@@ -305,17 +318,21 @@ void TeensyBridge::autodetect_and_build_boards() {
   }
 }
 
-// PWM 명령 콜백
+// ===============================================
+// [수정된 부분] PWM 명령 콜백 (4095 -> 1023 매핑)
+// ===============================================
 void TeensyBridge::on_cmd(size_t idx, const std_msgs::msg::UInt16MultiArray::SharedPtr msg) {
   if (idx >= boards_.size()) return;
   auto& b = *boards_[idx]; 
   std::lock_guard<std::mutex> lk(b.cmd_mtx);
 
   for (int i = 0; i < b.pwm_count; ++i) {
-    uint16_t v = (i < (int)msg->data.size()) ? msg->data[i] : 0;
-    if (v > 1023) v = 1023;
-    b.current_pwm[i] = v;
+    uint16_t raw_val = (i < (int)msg->data.size()) ? msg->data[i] : 0;
+    
+    // 여기서 4095 범위의 값을 1023 범위로 변환하여 저장
+    b.current_pwm[i] = map_4095_to_1023(raw_val);
   }
+  
   for (int i = b.pwm_count; i < PWM_MAX; ++i) b.current_pwm[i] = 0;
   b.have_cmd = true;
 }
@@ -352,7 +369,7 @@ void TeensyBridge::parse_pwm_board_packets(size_t idx) {
       // Board 3 (Index 2) 데이터 캐싱
       if (idx == 2) { 
         std::lock_guard<std::mutex> lk(b3_cache_mutex_);
-        // 패킷 인덱스 4,5,6이 실제 핀 20,21,22 매핑이라고 가정
+        // 패킷 인덱 4,5,6이 실제 핀 20,21,22 매핑이라고 가정
         b3_analog_cache_[0] = static_cast<uint16_t>(std::round(static_cast<double>(sp.analog[4]) * B3_BITS_TO_MV));
         b3_analog_cache_[1] = static_cast<uint16_t>(std::round(static_cast<double>(sp.analog[5]) * B3_BITS_TO_MV));
         b3_analog_cache_[2] = static_cast<uint16_t>(std::round(static_cast<double>(sp.analog[6]) * B3_BITS_TO_MV));

@@ -249,18 +249,38 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
   const double Rgas     = 287.0;
   const double TempK    = 293.15;
 
-  const double current_vol   = std::max(1e-12, (double)cfg_.volume_m3);
-  const double prev_vol = std::max(1e-12, (double)cfg_.prev_vol_m3);
+  const double current_vol = std::max(1e-12, (double)cfg_.volume_m3);
+  const double prev_vol    = std::max(1e-12, (double)cfg_.prev_vol_m3);
 
   const float k0 = cfg_.k0;
   const float k1 = cfg_.k1;
   const float k2 = cfg_.k2;
 
+  // [중요] 에러 계산을 최상단으로 이동
+  const float Pref = cfg_.ref_value;
+  float err = Pref - P_now;
+  
+  // =========================================================================
+  // [수정] Deadband (Threshold) Check
+  // 에러의 절대값이 설정된 threshold(예: 3.0)보다 작으면 무조건 0 리턴
+  // =========================================================================
+  if (std::abs(err) < cfg_.actuating_threshold) {
+      // 데드밴드 진입 시 적분항 누적 방지 (선택 사항: 0으로 리셋하거나 현상유지)
+      // 여기서는 튀는 것을 방지하기 위해 리셋하지 않고 통과하거나, 
+      // 필요하다면 아래 주석을 해제하세요.
+      // pos_error_integral_ = 0.0f;
+      // neg_error_integral_ = 0.0f;
+      
+      return {0.0f, 0.0f, 0.0f}; // 밸브 닫음
+  }
+
+  // --- 기존 로직 수행 ---
+
   float raw_vol_dot = float((current_vol - prev_vol) / dt_sec);
 
   vol_dot_buffer_.push_back(raw_vol_dot);
   if (vol_dot_buffer_.size() > vol_dot_window_size_) {
-      vol_dot_buffer_.pop_front(); // 가장 오래된 데이터 삭제
+      vol_dot_buffer_.pop_front(); 
   }
 
   float sum_vol_dot = 0.0f;
@@ -275,21 +295,20 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
   
   const float P_abs_atm = current_P_atm_; 
   
-  const float Pref = cfg_.ref_value;
-  float err = Pref - P_now;
-  
-  float P_dot = abs(Pref - P_now) * 1000 / target_time_constant; //[Pa/sec]
+  // P_dot 계산 (Feedforward)
+  float P_dot = (Pref - P_now) * 1000 / target_time_constant; //[Pa/sec]
+
   float m_dot_pressure =  P_dot  * current_vol / (Rgas * TempK) / lpm2kgps; //[LPM]
   float m_dot_volume = P_now * 1000 * vol_dot / (Rgas * TempK) / lpm2kgps; //[LPM]
   
-  
+  // 적분기(Integral) 업데이트
   if (cfg_.is_positive) {
     if ((err > 0.0f && pos_error_integral_ < 0.0f) || (err < 0.0f && pos_error_integral_ > 0.0f)) {
       pos_error_integral_ = 0.0f;
     }
     pos_error_integral_ += err * dt_sec;
     
-  }else {
+  } else {
     if ((err > 0.0f && neg_error_integral_ > 0.0f) || (err < 0.0f && neg_error_integral_ < 0.0f)) {
       neg_error_integral_ = 0.0f;
     }
@@ -302,10 +321,8 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
   
   float u_mi_req = 0.f, u_ma_req = 0.f, u_at_req = 0.f;
  
-  
-  // m_dot_total이 조건일 때
-  ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-   if (cfg_.is_positive) { 
+  // Feedforward 입력 계산
+  if (cfg_.is_positive) { 
     if ((m_dot_pressure + m_dot_volume) > 0.f) { 
       u_mi_req = (abs(m_dot_pressure + m_dot_volume) / sqrt(2 * P_micro * std::max(0.001f,(P_micro - P_now))) + k2 - k0 * P_micro) / k1 + ki_mi * pos_error_integral_;
 
@@ -315,16 +332,14 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
       } else {
         u_ma_req = 0;
       }
-    } else if (abs(m_dot_pressure + m_dot_volume) > (-1 * cfg_.actuating_threshold)) {
-      u_mi_req = 0.f;
-      u_ma_req = 0.f;
-      u_at_req = 0.f;
     } else { 
+      // Flow가 음수거나 0인 경우 (배기 필요)
       u_mi_req = 0.f;
       u_ma_req = 0.f;
       u_at_req = (abs(m_dot_pressure + m_dot_volume) / sqrt(2 * P_now * std::max(0.001f,(P_now - P_abs_atm))) + k2 - k0 * P_now) / k1 + ki_at * abs(pos_error_integral_);
     }
   } else { 
+    // 음압(Negative) 제어
     if ((m_dot_pressure + m_dot_volume) < 0.f) { 
       u_mi_req = (abs(m_dot_pressure + m_dot_volume)  / sqrt(2 * P_now * std::max(0.001f,(P_now - P_micro))) + k2 - k0 * P_now) / k1 + ki_mi * neg_error_integral_;
       u_at_req = 0.f;
@@ -333,62 +348,14 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
       } else {
         u_ma_req = 0;
       }
-    } else if ((m_dot_pressure + m_dot_volume) < cfg_.actuating_threshold){
-      u_mi_req = 0.f;
-      u_ma_req = 0.f;
-      u_at_req = 0.f;
     } else { 
       u_mi_req = 0.f;
       u_ma_req = 0.f;
       u_at_req = (abs(m_dot_pressure + m_dot_volume)  / sqrt(2 * P_abs_atm * std::max(0.001f,(P_abs_atm - P_now))) + k2 - k0 * P_abs_atm) / k1 + ki_at * abs(neg_error_integral_);
     }
   }
-  ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-
-  // err의 부호가 조건일 때
-  ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-  // if (cfg_.is_positive) { 
-  //   if (err > 0.f) { 
-  //     u_mi_req = ((abs(m_dot_pressure) + m_dot_volume) / sqrt(2 * P_micro * std::max(0.001f,(P_micro - P_now))) + k2 - k0 * P_micro) / k1 + ki_mi * pos_error_integral_;
-
-  //     u_at_req = 0.f;
-  //     if (abs(err) >= cfg_.macro_threshold) {
-  //       u_ma_req = ((abs(m_dot_pressure) + m_dot_volume) / sqrt(2 * P_macro * std::max(0.001f,(P_macro - P_now))) + k2 - k0 * P_macro) / k1 + ki_ma * pos_error_integral_;
-  //     } else {
-  //       u_ma_req = 0;
-  //     }
-  //   } else if (err > (-1 * cfg_.actuating_threshold)) {
-  //     u_mi_req = 0.f;
-  //     u_ma_req = 0.f;
-  //     u_at_req = 0.f;
-  //   } else { 
-  //     u_mi_req = 0.f;
-  //     u_ma_req = 0.f;
-  //     u_at_req = ((abs(m_dot_pressure) - m_dot_volume) / sqrt(2 * P_now * std::max(0.001f,(P_now - P_abs_atm))) + k2 - k0 * P_now) / k1 + ki_at * abs(pos_error_integral_);
-  //   }
-  // } else { 
-  //   if (err < 0.f) { 
-  //     u_mi_req = ((abs(m_dot_pressure) - m_dot_volume)  / sqrt(2 * P_now * std::max(0.001f,(P_now - P_micro))) + k2 - k0 * P_now) / k1 + ki_mi * neg_error_integral_;
-  //     u_at_req = 0.f;
-  //     if (abs(err) >=  cfg_.macro_threshold) {
-  //       u_ma_req = ((abs(m_dot_pressure) - m_dot_volume)  / sqrt(2 * P_macro * std::max(0.001f,(P_macro - P_now))) + k2 - k0 * P_macro) / k1 + ki_ma * pos_error_integral_;
-  //     } else {
-  //       u_ma_req = 0;
-  //     }
-  //   } else if (err < cfg_.actuating_threshold){
-  //     u_mi_req = 0.f;
-  //     u_ma_req = 0.f;
-  //     u_at_req = 0.f;
-  //   } else { 
-  //     u_mi_req = 0.f;
-  //     u_ma_req = 0.f;
-  //     u_at_req = ((abs(m_dot_pressure) + m_dot_volume)  / sqrt(2 * P_abs_atm * std::max(0.001f,(P_abs_atm - P_now))) + k2 - k0 * P_abs_atm) / k1 + ki_at * abs(neg_error_integral_);
-  //   }
-  // }
-  ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-
+  // Anti-windup Logic
   float u_mi_req_clamped =  std::clamp(u_mi_req, 0.0f, 100.0f);
   float u_ma_req_clamped =  std::clamp(u_ma_req, 0.0f, 100.0f);
   float u_at_req_clamped =  std::clamp(u_at_req, 0.0f, 100.0f);
@@ -407,7 +374,7 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
           }
       }
       if (pos_stop_integration) {
-      pos_error_integral_ -= err * dt_sec; 
+        pos_error_integral_ -= err * dt_sec; 
       }
   } else {
       if (err < 0.0f) {
@@ -420,7 +387,7 @@ std::array<float,3> AcadosMpc::compute_input_reference(float P_now, float P_micr
           }
       }
       if (neg_stop_integration) {
-      neg_error_integral_ += err * dt_sec; 
+        neg_error_integral_ += err * dt_sec; 
       }
   } 
   
@@ -476,12 +443,17 @@ void AcadosMpc::build_mpc_qp(const std::vector<float>& A_seq,
   UL = Eigen::VectorXf::Constant(Nu, cfg_.du_max);
 }
 
+// Controller.cpp 파일의 solve_qp_first_step 함수 수정
+
 std::array<float,3> AcadosMpc::solve_qp_first_step(const Eigen::MatrixXf& P,
                                                    const Eigen::VectorXf& q,
                                                    const Eigen::MatrixXf& A_con,
                                                    const Eigen::VectorXf& LL,
                                                    const Eigen::VectorXf& UL)
 {
+  // [수정] 사용하지 않는 파라미터 경고 무시 (Unused parameter warning suppression)
+  (void)A_con; 
+
   if (!qp_) {
       Eigen::VectorXf u = -P.ldlt().solve(q);
       return {u(0), u(1), u(2)};
@@ -489,6 +461,9 @@ std::array<float,3> AcadosMpc::solve_qp_first_step(const Eigen::MatrixXf& P,
 
   int Nu = q.size();
   Eigen::VectorXf solution(Nu);
+  
+  // 현재 QP Solver 구현(qp_->solve)이 A_con(행렬 제약) 없이 
+  // LL, UL(단순 바운드)만 사용하는 구조라서 A_con을 안 쓰고 있습니다.
   bool success = qp_->solve(P, q, LL, UL, solution);
 
   if (!success) {
@@ -500,15 +475,36 @@ std::array<float,3> AcadosMpc::solve_qp_first_step(const Eigen::MatrixXf& P,
 
 void AcadosMpc::solve(const SensorSnapshot& s, float dt_ms,
                       std::array<uint16_t, MPC_OUT_DIM>& out3,
-                    float current_time_sec)
+                      float current_time_sec)
 {
   float P_now   = current_P_now_;
+  
+  // =========================================================================
+  // [수정] Deadband (Threshold) Check - 최상단 배치
+  // 이 부분이 없으면 Feedforward가 0이어도 MPC가 미세한 오차를 줄이려고 동작함
+  // =========================================================================
+  float err = cfg_.ref_value - P_now;
+  if (std::abs(err) < cfg_.actuating_threshold) {
+      // 오차 범위 내에서는 계산하지 않고 0 출력 후 종료
+      out3[0] = 0;
+      out3[1] = 0;
+      out3[2] = 0;
+      
+      // Last u 업데이트 (0으로)
+      last_u3_ = {0.0f, 0.0f, 0.0f};
+      return; 
+  }
+
+  // --- 기존 로직 수행 ---
+  
   float P_micro = current_P_micro_;
   float P_macro = current_P_macro_;
 
   float dt_sec = dt_ms / 1000.0f; 
   if (dt_sec <= 0.0001f) dt_sec = cfg_.Ts;
 
+  // 위에서 compute_input_reference를 수정했으므로, 
+  // 여기서도 threshold 조건이면 {0,0,0}이 리턴됨
   auto uref_arr = compute_input_reference(P_now, P_micro, P_macro, dt_sec, current_time_sec);
   Eigen::RowVector3f u_ref(uref_arr[0], uref_arr[1], uref_arr[2]);
 
@@ -544,9 +540,11 @@ void AcadosMpc::solve(const SensorSnapshot& s, float dt_ms,
   };
   last_u3_ = u0;
 
-  out3[0] = static_cast<uint16_t>( std::round(u0[0] * 10.23f) ); 
-  out3[1] = static_cast<uint16_t>( std::round(u0[2] * 10.23f) ); 
-  out3[2] = static_cast<uint16_t>( std::round(u0[1] * 10.23f) ); 
+  // 4095 스케일 (100% -> 4095)
+  // 40.95 = 4095 / 100
+  out3[0] = static_cast<uint16_t>( std::round(u0[0] * 40.95f) ); 
+  out3[1] = static_cast<uint16_t>( std::round(u0[2] * 40.95f) ); 
+  out3[2] = static_cast<uint16_t>( std::round(u0[1] * 40.95f) ); 
 }
 
 
@@ -691,13 +689,13 @@ Controller::Controller(const rclcpp::NodeOptions& opts)
   mpc_ref_kpa_.fill(101.325);
 
   auto reliable = rclcpp::QoS(rclcpp::QoSInitialization::from_rmw(rmw_qos_profile_default)).reliable().keep_last(5);
-  sub_b0_ = create_subscription<std_msgs::msg::UInt16MultiArray>("teensy/b0/sensors", reliable, std::bind(&Controller::on_sensor_b0, this, _1));
-  sub_b1_ = create_subscription<std_msgs::msg::UInt16MultiArray>("teensy/b1/sensors", reliable, std::bind(&Controller::on_sensor_b1, this, _1));
-  sub_b2_ = create_subscription<std_msgs::msg::UInt16MultiArray>("teensy/b2/sensors", reliable, std::bind(&Controller::on_sensor_b2, this, _1));
+  sub_b0_ = create_subscription<std_msgs::msg::UInt16MultiArray>("board/b0/sensors", reliable, std::bind(&Controller::on_sensor_b0, this, _1));
+  sub_b1_ = create_subscription<std_msgs::msg::UInt16MultiArray>("board/b1/sensors", reliable, std::bind(&Controller::on_sensor_b1, this, _1));
+  sub_b2_ = create_subscription<std_msgs::msg::UInt16MultiArray>("board/b2/sensors", reliable, std::bind(&Controller::on_sensor_b2, this, _1));
 
-  pub_b0_ = create_publisher<std_msgs::msg::UInt16MultiArray>("teensy/b0/pwm_cmd", 5);
-  pub_b1_ = create_publisher<std_msgs::msg::UInt16MultiArray>("teensy/b1/pwm_cmd", 5);
-  pub_b2_ = create_publisher<std_msgs::msg::UInt16MultiArray>("teensy/b2/pwm_cmd", 5);
+  pub_b0_ = create_publisher<std_msgs::msg::UInt16MultiArray>("board/b0/pwm_cmd", 5);
+  pub_b1_ = create_publisher<std_msgs::msg::UInt16MultiArray>("board/b1/pwm_cmd", 5);
+  pub_b2_ = create_publisher<std_msgs::msg::UInt16MultiArray>("board/b2/pwm_cmd", 5);
   pub_mpc_refs_ = create_publisher<std_msgs::msg::Float64MultiArray>("controller/mpc_refs_kpa", 10);
   
   // [추가] 부피 데이터 Publish (큐 사이즈 1)
@@ -906,12 +904,6 @@ void Controller::on_timer() {
   const double P_line_macro_kPa = current_filt_b2[6]; 
   const double P_atm_kPa        = sensor_.kpa_atm();  
 
-  // Macro Switch 로직
-  if (macro_switch_pwm_index_ >= 0 && macro_switch_pwm_index_ < PWM_MAX_B2) {
-    const bool macro_on = (P_line_macro_kPa > macro_switch_threshold_kpa_);
-    zoh_b2_[(size_t)macro_switch_pwm_index_] = macro_on ? 1023 : 0;
-  }
-
   // Ref Snapshot 로직
   std::array<double, MPC_TOTAL> ref_snapshot{};
   std::array<double, 8> vol_snapshot{};
@@ -1026,6 +1018,38 @@ void Controller::on_timer() {
 
   pool_->run_batch_and_wait(tasks);
   
+  if (macro_switch_pwm_index_ >= 0 && macro_switch_pwm_index_ < PWM_MAX_B2) {
+    bool any_neg_macro_active = false;
+
+    // 전체 채널 중 "음압 채널"만 순회
+    for (int gid = num_positive_channels_; gid < MPC_TOTAL; ++gid) {
+      
+      // 해당 채널의 보드 위치와 데이터 인덱스 계산
+      int board_idx = 0;
+      if (gid < 4) board_idx = 0;      // Board 0 (Unit 0~3)
+      else if (gid < 8) board_idx = 1; // Board 1 (Unit 4~7)
+      else board_idx = 2;              // Board 2 (Unit 8~11)
+
+      // 각 유닛은 3개의 PWM 슬롯을 씀 (0:Micro, 1:Atmos, 2:Macro)
+      // 따라서 Macro 밸브의 인덱스는 (gid % 4) * 3 + 2
+      int pwm_idx = (gid % 4) * 3 + 2; 
+
+      uint16_t cmd_val = 0;
+      if (board_idx == 0) cmd_val = zoh_b0_[pwm_idx];
+      else if (board_idx == 1) cmd_val = zoh_b1_[pwm_idx];
+      else cmd_val = zoh_b2_[pwm_idx];
+
+      // PWM이 조금이라도 켜져 있으면 (Threshold: 10)
+      if (cmd_val > 10) {
+        any_neg_macro_active = true;
+        break; // 하나라도 찾으면 루프 종료
+      }
+    }
+
+    // [수정] 4095로 변경
+    zoh_b2_[(size_t)macro_switch_pwm_index_] = any_neg_macro_active ? 4095 : 0;
+  }
+
   const double dt = std::max(1e-6, (double)period_ms_ / 1000.0);
 
   // -------------------------------------------------------------
@@ -1054,7 +1078,8 @@ void Controller::on_timer() {
     pid_pos_state_.has_prev = true;
 
     const double inverted_u = pid_out_max_ - u;
-    const uint16_t pwm = static_cast<uint16_t>( std::round(inverted_u * 10.23) );
+    // [수정] 4095 스케일 (40.95 = 4095/100)
+    const uint16_t pwm = static_cast<uint16_t>( std::round(inverted_u * 40.95) );
     
     if (pid_pos_pwm_index_ >= 0 && pid_pos_pwm_index_ < PWM_MAX_B2) {
       zoh_b2_[(size_t)pid_pos_pwm_index_] = pwm;
@@ -1084,7 +1109,8 @@ void Controller::on_timer() {
     pid_neg_state_.has_prev = true;
 
     const double inverted_u = pid_out_max_ - u;
-    const uint16_t pwm = static_cast<uint16_t>( std::round(inverted_u * 10.23) );
+    // [수정] 4095 스케일 (40.95 = 4095/100)
+    const uint16_t pwm = static_cast<uint16_t>( std::round(inverted_u * 40.95) );
 
     if (pid_neg_pwm_index_ >= 0 && pid_neg_pwm_index_ < PWM_MAX_B2) {
       zoh_b2_[(size_t)pid_neg_pwm_index_] = pwm;

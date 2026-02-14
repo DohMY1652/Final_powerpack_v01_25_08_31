@@ -1,0 +1,312 @@
+# ==========================================
+# Node 1: Teensy Bridge (Hardware Interface)
+# ==========================================
+/pack1/teensy_bridge:
+  ros__parameters:
+    # [중요] true: 실제 장비 연결 / false: 시뮬레이션 모드(가상 데이터)
+    use_hardware: true
+    
+    # 4개 포트 설정 (use_hardware: true 일 때만 유효)
+    ports: ["/dev/ttyACM0", "/dev/ttyACM1", "/dev/ttyACM2", "/dev/ttyACM3"]
+    
+    # Board IDs: 1,2,3(PWM), 4(ADC)
+    board_ids: [1, 2, 3, 4]
+    
+    # 각 보드별 PWM 채널 수 (보드 4는 0)
+    pwm_channels: [12, 12, 15, 0]
+    
+    # 각 보드별 Analog 채널 수 (보드 4는 4개지만 내부적으로 12ch 처리)
+    analog_channels: [4, 4, 7, 0]
+    
+    period_ms: 50
+    stats_period_ms: 1000
+    monitor_enabled: true
+    mlock: true
+
+# ==========================================
+# Node 2: PP Controller (Control Algorithm)
+# ==========================================
+/pack1/pp_controller:
+  ros__parameters:
+    # [수정됨] 양압(Positive) 채널의 개수 설정 (0 ~ num-1 까지 양압, 나머지 음압)
+    period_ms: 4
+    num_positive_channels: 8
+    
+    active_mpc_channels: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    sensor_filter_alpha: 1.0
+
+    # === per-channel calibration (map-based) ===
+    Sensor_calibration:
+      atm_offset: 101.325
+      b0:
+        "0": { offset: 995.0,  gain: 0.250 }
+        "1": { offset: 987.0,   gain: 0.250 }
+        "2": { offset: 993.0,  gain: 0.250 }
+        "3": { offset: 1002.0,  gain: 0.250 }
+      b1:
+        "0": { offset: 966.0,   gain: 0.250 }
+        "1": { offset: 996.0,  gain: 0.250 }
+        "2": { offset: 996.0,  gain: 0.250 }
+        "3": { offset: 994.0,   gain: 0.250 }
+      b2:
+        "0": { offset: 918.0,   gain: -0.02525 }
+        "1": { offset: 960.0,   gain: -0.02525 }
+        "2": { offset: 945.0,   gain: -0.02525 }
+        "3": { offset: 970.0,   gain: -0.02525 }
+        "4": { offset: 670.0,   gain: 0.3150 }    # pos line (핀20)
+        "5": { offset: 625.0,   gain: -0.0378 }   # neg line (핀21)
+        "6": { offset: 402.0,   gain: 0.6800 }    # macro line (핀22)
+
+    channel_config:
+      ch0:
+        pos_ki_micro: 10.0 
+        pos_ki_macro: 0.8 
+        pos_ki_atm: 10.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.50
+      ch1:
+        pos_ki_micro: 10.0 
+        pos_ki_macro: 0.8 
+        pos_ki_atm: 10.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.50
+      ch2:
+        pos_ki_micro: 2.0 
+        pos_ki_macro: 0.8 
+        pos_ki_atm: 7.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.50
+      ch3:
+        pos_ki_micro: 10.0 
+        pos_ki_macro: 0.8 
+        pos_ki_atm: 4.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.57
+      ch4:
+        pos_ki_micro: 2.0 
+        pos_ki_macro: 0.8 
+        pos_ki_atm: 7.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.50
+      ch5:
+        pos_ki_micro: 2.0 
+        pos_ki_macro: 0.8 
+        pos_ki_atm: 9.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.50
+      ch6:
+        pos_ki_micro: 2.0 
+        pos_ki_macro: 0.8 
+        pos_ki_atm: 7.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.50
+      ch7:
+        pos_ki_micro: 2.0 
+        pos_ki_macro: 0.8 
+        pos_ki_atm: 5.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.55
+      ch8:
+        neg_ki_micro: 10.0 
+        neg_ki_macro: 2.0 
+        neg_ki_atm: 5.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.70
+      ch9:
+        neg_ki_micro: 8.0 
+        neg_ki_macro: 2.0 
+        neg_ki_atm: 5.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.70
+      ch10:
+        neg_ki_micro: 10.0 
+        neg_ki_macro: 2.0 
+        neg_ki_atm: 5.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.70
+      ch11:
+        neg_ki_micro: 8.0 
+        neg_ki_macro: 2.0 
+        neg_ki_atm: 5.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.70
+
+    # channel_config:
+    #   ch0:
+    #     pos_ki_micro: 0.0 
+    #     pos_ki_macro: 0.0 
+    #     pos_ki_atm: 0.0 
+    #     k0: 0.00022
+    #     k1: 0.008
+    #     k2: 0.6
+    #   ch1:
+    #     pos_ki_micro: 0.0 
+    #     pos_ki_macro: 0.0 
+    #     pos_ki_atm: 0.0 
+    #     k0: 0.00022
+    #     k1: 0.008
+    #     k2: 0.6
+    #   ch2:
+    #     pos_ki_micro: 0.0 
+    #     pos_ki_macro: 0.0 
+    #     pos_ki_atm: 0.0 
+    #     k0: 0.00022
+    #     k1: 0.008
+    #     k2: 0.65
+    #   ch3:
+    #     pos_ki_micro: 0.0 
+    #     pos_ki_macro: 0.0 
+    #     pos_ki_atm: 0.0 
+    #     k0: 0.00022
+    #     k1: 0.008
+    #     k2: 0.6
+    #   ch4:
+    #     pos_ki_micro: 0.0 
+    #     pos_ki_macro: 0.0 
+    #     pos_ki_atm: 0.0 
+    #     k0: 0.00022
+    #     k1: 0.008
+    #     k2: 0.6
+    #   ch5:
+    #     pos_ki_micro: 0.0 
+    #     pos_ki_macro: 0.0 
+    #     pos_ki_atm: 0.0 
+    #     k0: 0.00022
+    #     k1: 0.008
+    #     k2: 0.6
+    #   ch6:
+    #     pos_ki_micro: 0.0 
+    #     pos_ki_macro: 0.0 
+    #     pos_ki_atm: 0.0 
+    #     k0: 0.00022
+    #     k1: 0.008
+    #     k2: 0.6
+    #   ch7:
+    #     pos_ki_micro: 0.0 
+    #     pos_ki_macro: 0.0 
+    #     pos_ki_atm: 0.0 
+    #     k0: 0.00022
+    #     k1: 0.008
+    #     k2: 0.6
+    #   ch8:
+    #     neg_ki_micro: 0.0 
+    #     neg_ki_macro: 0.0 
+    #     neg_ki_atm: 0.0 
+    #     k0: 0.00022
+    #     k1: 0.008
+    #     k2: 0.6
+    #   ch9:
+    #     neg_ki_micro: 0.0 
+    #     neg_ki_macro: 0.0 
+    #     neg_ki_atm: 0.0 
+    #     k0: 0.00022
+    #     k1: 0.008
+    #     k2: 0.6
+    #   ch10:
+    #     neg_ki_micro: 0.0 
+    #     neg_ki_macro: 0.0 
+    #     neg_ki_atm: 0.0 
+    #     k0: 0.00022
+    #     k1: 0.008
+    #     k2: 0.6
+    #   ch11:
+    #     neg_ki_micro: 0.0 
+    #     neg_ki_macro: 0.0 
+    #     neg_ki_atm: 0.0 
+    #     k0: 0.00022
+    #     k1: 0.008
+    #     k2: 0.6
+
+    RefTcp:
+      enable: true
+      # host: "169.254.46.254"
+      host: '127.0.0.1'
+      port: 2291
+      expect_n: 20
+      pressure_scale: 0.0030518
+      volume_scale: 0.030518
+
+    LinePID:
+      pos:
+        kp: 1.0
+        ki: 0.0
+        kd: 0.0
+        ref: 400.0
+        pwm_index: 12
+      
+      neg:
+        kp: 1.0
+        ki: 0.0
+        kd: 0.0
+        ref: 40.0
+        pwm_index: 13
+      
+      out_min: 0.0
+      out_max: 100.0
+
+    MPC_parameters:
+      NP: 20
+      n_x: 1
+      n_u: 3
+      Ts: 0.004
+      Q_values: 10.0
+      R_values: 10.0
+
+      ejector_k: 0.005         
+      ejector_p_limit: 11.325  
+      
+      leakage_u_pos: 0.0
+      leakage_u_neg: 0.0
+
+      target_time_constant: 10.0
+
+      macro_threshold : 17.0
+      actuating_threshold : 1.0
+
+    # test volume
+    channel_volume:
+      # ch0_ml: 2.0
+      # ch1_ml: 2.0
+      # ch2_ml: 0.0001
+      # ch3_ml: 1.5
+      # ch4_ml: 6.0
+      # ch5_ml: 5.0
+      # ch6_ml: 1.250
+      # ch7_ml: 1.250
+      # ch8_ml: 10.0
+      # ch9_ml: 10.0
+      # ch10_ml: 10.0
+      # ch11_ml: 10.0
+            #positive
+      ch0_ml: 500 # SORO
+      ch1_ml: 500 # SORO
+      ch2_ml: 300 # SORO
+      ch3_ml: 300 # SORO
+      ch4_ml: 600 # CAMAS
+      ch5_ml: 600 # CAMAS
+      ch6_ml: 50 # CAMAS
+      ch7_ml: 50 # CAMAS
+      #negative 
+      ch8_ml: 500 # SORO
+      ch9_ml: 500 # SORO
+      ch10_ml: 300 # SORO
+      ch11_ml: 300 # SORO
+
+
+    system_parameters:
+      valve_operate: true
+
+    MacroSwitch:
+      threshold_kpa: 600.0

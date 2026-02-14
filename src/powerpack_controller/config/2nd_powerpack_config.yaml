@@ -1,0 +1,197 @@
+# ==========================================
+# Node 1: CAN Bridge (Hardware Interface)
+# ==========================================
+/pack2/can_bridge:
+  ros__parameters:
+    # Kvaser 하드웨어 채널 번호 (보통 0 또는 1)
+    # 장비가 인식된 채널에 맞춰 설정하세요.
+    can_channel: 0
+
+# ==========================================
+# Node 2: PP Controller (Control Algorithm)
+# ==========================================
+/pack2/pp_controller:
+  ros__parameters:
+    # [수정됨] 양압(Positive) 채널의 개수 설정 (0 ~ num-1 까지 양압, 나머지 음압)
+    period_ms: 4
+    num_positive_channels: 8
+    
+    active_mpc_channels: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    sensor_filter_alpha: 1.0
+
+    # === per-channel calibration (map-based) ===
+    Sensor_calibration:
+      atm_offset: 101.325
+      b0:
+        "0": { offset: 1064.0,  gain: 0.250 }
+        "1": { offset: 1077.0,   gain: 0.250 }
+        "2": { offset: 1089.0,  gain: 0.250 }
+        "3": { offset: 1065.0,  gain: 0.250 }
+      b1:
+        "0": { offset: 1072.0,   gain: 0.250 }
+        "1": { offset: 1070.0,  gain: 0.250 }
+        "2": { offset: 1083.0,  gain: 0.250 }
+        "3": { offset: 1094.0,   gain: 0.250 }
+      b2:
+        "0": { offset: 1012.0,   gain: -0.02525 }
+        "1": { offset: 1032.0,   gain: -0.02525 }
+        "2": { offset: 1010.0,   gain: -0.02525 }
+        "3": { offset: 1030.0,   gain: -0.02525 }
+        "4": { offset: 1107.0,   gain: 0.250 }    # pos line (핀20 -> Board 1)
+        "5": { offset: 1020.0,   gain: -0.02525 }   # neg line (핀21 -> Board 2)
+        "6": { offset: 1020.0,   gain: 0.250 }    # macro line (핀22 -> Board 3)
+
+    channel_config:
+      ch0:
+        pos_ki_micro: 0.0 
+        pos_ki_macro: 0.0 
+        pos_ki_atm: 0.0 
+        k0: 0.00022
+        k1: 0.010
+        k2: 0.75
+      ch1:
+        pos_ki_micro: 0.0 
+        pos_ki_macro: 0.0 
+        pos_ki_atm: 0.0 
+        k0: 0.00022
+        k1: 0.010
+        k2: 0.75
+      ch2:
+        pos_ki_micro: 0.0 
+        pos_ki_macro: 0.0
+        pos_ki_atm: 0.0 
+        k0: 0.00022
+        k1: 0.010
+        k2: 0.75
+      ch3:
+        pos_ki_micro: 0.0 
+        pos_ki_macro: 0.0 
+        pos_ki_atm: 0.0 
+        k0: 0.00022
+        k1: 0.010
+        k2: 0.75
+      ch4:
+        pos_ki_micro: 0.0 
+        pos_ki_macro: 0.0
+        pos_ki_atm: 0.0 
+        k0: 0.00022
+        k1: 0.010
+        k2: 0.75
+      ch5:
+        pos_ki_micro: 0.0 
+        pos_ki_macro: 0.0 
+        pos_ki_atm: 0.0 
+        k0: 0.00022
+        k1: 0.010
+        k2: 0.75
+      ch6:
+        pos_ki_micro: 0.0 
+        pos_ki_macro: 0.0 
+        pos_ki_atm: 0.0 
+        k0: 0.00022
+        k1: 0.010
+        k2: 0.75
+      ch7:
+        pos_ki_micro: 0.0 
+        pos_ki_macro: 0.0 
+        pos_ki_atm: 0.0 
+        k0: 0.00022
+        k1: 0.010
+        k2: 0.75
+      ch8:
+        neg_ki_micro: 0.0 
+        neg_ki_macro: 0.0 
+        neg_ki_atm: 0.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.70
+      ch9:
+        neg_ki_micro: 0.0 
+        neg_ki_macro: 0.0 
+        neg_ki_atm: 0.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.70
+      ch10:
+        neg_ki_micro: 0.0 
+        neg_ki_macro: 0.0 
+        neg_ki_atm: 0.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.70
+      ch11:
+        neg_ki_micro: 0.0 
+        neg_ki_macro: 0.0 
+        neg_ki_atm: 0.0 
+        k0: 0.00022
+        k1: 0.008
+        k2: 0.70
+
+    RefTcp:
+      enable: true
+      host: "169.254.46.254"
+      # host: '127.0.0.1'
+      port: 2291
+      expect_n: 20
+      pressure_scale: 0.0030518
+      volume_scale: 0.030518
+
+    LinePID:
+      pos:
+        kp: 0.5
+        ki: 0.1
+        kd: 0.0
+        ref: 400.0
+        pwm_index: 12
+      
+      neg:
+        kp: 2.0
+        ki: 0.2
+        kd: 0.0
+        ref: 50.0
+        pwm_index: 13
+      
+      out_min: 0.0
+      out_max: 100.0
+
+    MPC_parameters:
+      NP: 20
+      n_x: 1
+      n_u: 3
+      Ts: 0.004
+      Q_values: 10.0
+      R_values: 10.0
+
+      ejector_k: 0.005         
+      ejector_p_limit: 11.325  
+      
+      leakage_u_pos: 0.0
+      leakage_u_neg: 0.0
+
+      target_time_constant: 10.0
+
+      macro_threshold : 17.0
+      actuating_threshold : 2.0
+
+    # test volume
+    channel_volume:
+      # positive
+      ch0_ml: 2 # SORO
+      ch1_ml: 2 # SORO
+      ch2_ml: 2 # SORO
+      ch3_ml: 2 # SORO
+      ch4_ml: 2 # CAMAS
+      ch5_ml: 2 # CAMAS
+      ch6_ml: 2 # CAMAS
+      ch7_ml: 2 # CAMAS
+      # negative 
+      ch8_ml: 2 # SORO
+      ch9_ml: 2 # SORO
+      ch10_ml: 2 # SORO
+      ch11_ml: 2 # SORO
+
+    system_parameters:
+      valve_operate: true
+
+    MacroSwitch:
+      threshold_kpa: 600.0

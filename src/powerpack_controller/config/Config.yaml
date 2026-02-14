@@ -59,89 +59,89 @@ pp_controller:
 
     channel_config:
       ch0:
-        pos_ki_micro: 15.0 
-        pos_ki_macro: 0.8 
-        pos_ki_atm: 15.0 
+        pos_ki_micro: 0.20 
+        pos_ki_macro: 0.3 
+        pos_ki_atm: 0.1 
         k0: 0.00022
-        k1: 0.008
-        k2: 0.50
+        k1: 0.009
+        k2: 0.55
       ch1:
-        pos_ki_micro: 15.0 
-        pos_ki_macro: 0.8 
-        pos_ki_atm: 15.0 
+        pos_ki_micro: 0.20 
+        pos_ki_macro: 0.3 
+        pos_ki_atm: 0.1 
         k0: 0.00022
-        k1: 0.008
-        k2: 0.50
+        k1: 0.009
+        k2: 0.55
       ch2:
-        pos_ki_micro: 2.0 
-        pos_ki_macro: 0.8 
-        pos_ki_atm: 7.0 
+        pos_ki_micro: 0.2 
+        pos_ki_macro: 0.3 
+        pos_ki_atm: 0.1 
         k0: 0.00022
-        k1: 0.008
-        k2: 0.50
+        k1: 0.009
+        k2: 0.55
       ch3:
-        pos_ki_micro: 10.0 
-        pos_ki_macro: 0.8 
-        pos_ki_atm: 4.0 
+        pos_ki_micro: 0.20 
+        pos_ki_macro: 0.3 
+        pos_ki_atm: 0.1 
         k0: 0.00022
-        k1: 0.008
-        k2: 0.57
+        k1: 0.009
+        k2: 0.55
       ch4:
-        pos_ki_micro: 2.0 
-        pos_ki_macro: 0.8 
-        pos_ki_atm: 7.0 
+        pos_ki_micro: 0.2 
+        pos_ki_macro: 0.3 
+        pos_ki_atm: 0.1 
         k0: 0.00022
-        k1: 0.008
-        k2: 0.50
+        k1: 0.009
+        k2: 0.55
       ch5:
-        pos_ki_micro: 2.0 
-        pos_ki_macro: 0.8 
-        pos_ki_atm: 9.0 
+        pos_ki_micro: 0.2 
+        pos_ki_macro: 0.3 
+        pos_ki_atm: 0.1 
         k0: 0.00022
-        k1: 0.008
-        k2: 0.50
+        k1: 0.009
+        k2: 0.55
       ch6:
-        pos_ki_micro: 2.0 
-        pos_ki_macro: 0.8 
-        pos_ki_atm: 7.0 
+        pos_ki_micro: 0.2 
+        pos_ki_macro: 0.3 
+        pos_ki_atm: 0.1 
         k0: 0.00022
-        k1: 0.008
-        k2: 0.50
+        k1: 0.009
+        k2: 0.55
       ch7:
-        pos_ki_micro: 2.0 
-        pos_ki_macro: 0.8 
-        pos_ki_atm: 5.0 
+        pos_ki_micro: 0.2 
+        pos_ki_macro: 0.3 
+        pos_ki_atm: 0.1 
         k0: 0.00022
-        k1: 0.008
+        k1: 0.009
         k2: 0.55
       ch8:
-        neg_ki_micro: 15.0 
-        neg_ki_macro: 2.0 
-        neg_ki_atm: 5.0 
+        neg_ki_micro: 1.0 
+        neg_ki_macro: 1.0 
+        neg_ki_atm: 2.0 
         k0: 0.00022
-        k1: 0.008
-        k2: 0.70
+        k1: 0.010
+        k2: 0.75
       ch9:
-        neg_ki_micro: 15.0 
-        neg_ki_macro: 2.0 
-        neg_ki_atm: 5.0 
+        neg_ki_micro: 1.0 
+        neg_ki_macro: 1.0 
+        neg_ki_atm: 2.0 
         k0: 0.00022
-        k1: 0.008
-        k2: 0.70
+        k1: 0.010
+        k2: 0.75
       ch10:
-        neg_ki_micro: 15.0 
-        neg_ki_macro: 2.0 
-        neg_ki_atm: 5.0 
+        neg_ki_micro: 1.0 
+        neg_ki_macro: 1.0 
+        neg_ki_atm: 2.0 
         k0: 0.00022
-        k1: 0.008
-        k2: 0.70
+        k1: 0.010
+        k2: 0.75
       ch11:
-        neg_ki_micro: 15.0 
-        neg_ki_macro: 2.0 
-        neg_ki_atm: 5.0 
+        neg_ki_micro: 1.0 
+        neg_ki_macro: 1.0 
+        neg_ki_atm: 2.0 
         k0: 0.00022
-        k1: 0.008
-        k2: 0.70
+        k1: 0.010
+        k2: 0.75
 
     # channel_config:
     #   ch0:
@@ -233,7 +233,7 @@ pp_controller:
       enable: true
       host: "169.254.46.254"
       # host: '127.0.0.1'
-      port: 2291
+      port: 2292
       expect_n: 20
       pressure_scale: 0.0030518
       volume_scale: 0.030518
@@ -270,10 +270,10 @@ pp_controller:
       leakage_u_pos: 0.0
       leakage_u_neg: 0.0
 
-      target_time_constant: 10.0
+      target_time_constant: 1.0
 
-      macro_threshold : 17.0
-      actuating_threshold : 2.0
+      macro_threshold : 15.0
+      actuating_threshold : 5.0
 
     # test volume
     channel_volume:

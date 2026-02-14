@@ -46,7 +46,7 @@ static constexpr int ANALOG_B1  = 4;
 static constexpr int ANALOG_B2  = 7;
 
 static constexpr int PWM_CLAMP_MIN = 0;
-static constexpr int PWM_CLAMP_MAX = 1023;
+static constexpr int PWM_CLAMP_MAX = 4095;
 
 static constexpr int PWM_RATE_HZ   = 1000; // 1 kHz
 static constexpr int MPC_RATE_HZ   = 250;  // 250 Hz

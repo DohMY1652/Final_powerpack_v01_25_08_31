@@ -3,6 +3,8 @@ build/
 install/
 log/
 bags/
+linuxcan/
+
 
 # VSCode / CLion / IDE stuff
 .vscode/
@@ -13,3 +15,6 @@ bags/
 # OS-specific
 .DS_Store
 Thumbs.db
+
+
+linuxcan-5.50.312.tar.gz

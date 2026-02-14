@@ -1,75 +1,75 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <root>
- <tabbed_widget name="Main Window" parent="main_window">
+ <tabbed_widget parent="main_window" name="Main Window">
   <Tab containers="1" tab_name="tab1">
    <Container>
-    <DockSplitter sizes="0.362921;0.637079" orientation="-" count="2">
-     <DockSplitter sizes="0.250334;0.249666;0.250334;0.249666" orientation="|" count="4">
+    <DockSplitter count="2" sizes="0.361798;0.638202" orientation="-">
+     <DockSplitter count="4" sizes="0.250334;0.249666;0.250334;0.249666" orientation="|">
       <DockArea name="...">
-       <plot style="Lines" flip_x="false" flip_y="false" mode="TimeSeries">
-        <range bottom="101.356440" left="6.524779" top="152.535959" right="11.520977"/>
+       <plot flip_y="false" flip_x="false" style="Lines" mode="TimeSeries">
+        <range left="11.768056" right="16.765428" bottom="98.025190" top="152.617209"/>
         <limitY/>
         <curve name="/controller/mpc_refs_kpa/data[0]" color="#1f77b4"/>
         <curve name="/controller/b0/sensors_kpa/data[0]" color="#f14cc1"/>
        </plot>
       </DockArea>
       <DockArea name="...">
-       <plot style="Lines" flip_x="false" flip_y="false" mode="TimeSeries">
-        <range bottom="102.637690" left="6.524779" top="152.504709" right="11.520977"/>
+       <plot flip_y="false" flip_x="false" style="Lines" mode="TimeSeries">
+        <range left="11.768056" right="16.765428" bottom="98.793940" top="152.598459"/>
         <limitY/>
         <curve name="/controller/mpc_refs_kpa/data[1]" color="#d62728"/>
         <curve name="/controller/b0/sensors_kpa/data[1]" color="#9467bd"/>
        </plot>
       </DockArea>
       <DockArea name="...">
-       <plot style="Lines" flip_x="false" flip_y="false" mode="TimeSeries">
-        <range bottom="100.587690" left="6.524779" top="152.554709" right="11.520977"/>
+       <plot flip_y="false" flip_x="false" style="Lines" mode="TimeSeries">
+        <range left="11.768056" right="16.765428" bottom="97.768940" top="152.623459"/>
         <limitY/>
         <curve name="/controller/mpc_refs_kpa/data[2]" color="#1ac938"/>
         <curve name="/controller/b0/sensors_kpa/data[2]" color="#17becf"/>
        </plot>
       </DockArea>
       <DockArea name="...">
-       <plot style="Lines" flip_x="false" flip_y="false" mode="TimeSeries">
-        <range bottom="97.768940" left="6.524779" top="152.623459" right="11.520977"/>
+       <plot flip_y="false" flip_x="false" style="Lines" mode="TimeSeries">
+        <range left="11.768056" right="16.765428" bottom="97.000190" top="152.642209"/>
         <limitY/>
         <curve name="/controller/mpc_refs_kpa/data[3]" color="#ff7f0e"/>
         <curve name="/controller/b0/sensors_kpa/data[3]" color="#bcbd22"/>
        </plot>
       </DockArea>
      </DockSplitter>
-     <DockSplitter sizes="0.5;0.5" orientation="|" count="2">
-      <DockSplitter sizes="0.501767;0.498233" orientation="-" count="2">
-       <DockSplitter sizes="0.502003;0.497997" orientation="|" count="2">
+     <DockSplitter count="2" sizes="0.5;0.5" orientation="|">
+      <DockSplitter count="2" sizes="0.500882;0.499118" orientation="-">
+       <DockSplitter count="2" sizes="0.502003;0.497997" orientation="|">
         <DockArea name="...">
-         <plot style="Lines" flip_x="false" flip_y="false" mode="TimeSeries">
-          <range bottom="108.275190" left="6.524779" top="152.367209" right="11.520977"/>
+         <plot flip_y="false" flip_x="false" style="Lines" mode="TimeSeries">
+          <range left="11.768056" right="16.765428" bottom="100.075190" top="152.567209"/>
           <limitY/>
           <curve name="/controller/mpc_refs_kpa/data[4]" color="#f14cc1"/>
           <curve name="/controller/b1/sensors_kpa/data[0]" color="#1f77b4"/>
          </plot>
         </DockArea>
         <DockArea name="...">
-         <plot style="Lines" flip_x="false" flip_y="false" mode="TimeSeries">
-          <range bottom="101.100190" left="6.524779" top="152.542209" right="11.520977"/>
+         <plot flip_y="false" flip_x="false" style="Lines" mode="TimeSeries">
+          <range left="11.768056" right="16.765428" bottom="99.306440" top="152.585959"/>
           <limitY/>
           <curve name="/controller/mpc_refs_kpa/data[5]" color="#9467bd"/>
           <curve name="/controller/b1/sensors_kpa/data[1]" color="#d62728"/>
          </plot>
         </DockArea>
        </DockSplitter>
-       <DockSplitter sizes="0.502003;0.497997" orientation="|" count="2">
+       <DockSplitter count="2" sizes="0.502003;0.497997" orientation="|">
         <DockArea name="...">
-         <plot style="Lines" flip_x="false" flip_y="false" mode="TimeSeries">
-          <range bottom="50.113108" left="6.524779" top="100.763461" right="11.520977"/>
+         <plot flip_y="false" flip_x="false" style="Lines" mode="TimeSeries">
+          <range left="11.768056" right="16.765428" bottom="50.063239" top="102.808080"/>
           <limitY/>
           <curve name="/controller/mpc_refs_kpa/data[8]" color="#1f77b4"/>
           <curve name="/controller/b2/sensors_kpa/data[0]" color="#f14cc1"/>
          </plot>
         </DockArea>
         <DockArea name="...">
-         <plot style="Lines" flip_x="false" flip_y="false" mode="TimeSeries">
-          <range bottom="50.094171" left="6.524779" top="101.539898" right="11.520977"/>
+         <plot flip_y="false" flip_x="false" style="Lines" mode="TimeSeries">
+          <range left="11.768056" right="16.765428" bottom="50.056927" top="103.066892"/>
           <limitY/>
           <curve name="/controller/mpc_refs_kpa/data[9]" color="#d62728"/>
           <curve name="/controller/b2/sensors_kpa/data[1]" color="#9467bd"/>
@@ -77,37 +77,37 @@
         </DockArea>
        </DockSplitter>
       </DockSplitter>
-      <DockSplitter sizes="0.501767;0.498233" orientation="-" count="2">
-       <DockSplitter sizes="0.502003;0.497997" orientation="|" count="2">
+      <DockSplitter count="2" sizes="0.500882;0.499118" orientation="-">
+       <DockSplitter count="2" sizes="0.502003;0.497997" orientation="|">
         <DockArea name="...">
-         <plot style="Lines" flip_x="false" flip_y="false" mode="TimeSeries">
-          <range bottom="97.375000" left="6.524779" top="305.275000" right="11.520977"/>
+         <plot flip_y="false" flip_x="false" style="Lines" mode="TimeSeries">
+          <range left="11.768056" right="16.765428" bottom="95.462690" top="152.679709"/>
           <limitY/>
           <curve name="/controller/mpc_refs_kpa/data[6]" color="#17becf"/>
           <curve name="/controller/b1/sensors_kpa/data[2]" color="#1ac938"/>
          </plot>
         </DockArea>
         <DockArea name="...">
-         <plot style="Lines" flip_x="false" flip_y="false" mode="TimeSeries">
-          <range bottom="97.875000" left="6.524779" top="305.775000" right="11.520977"/>
+         <plot flip_y="false" flip_x="false" style="Lines" mode="TimeSeries">
+          <range left="11.768056" right="16.765428" bottom="95.718940" top="152.673459"/>
           <limitY/>
           <curve name="/controller/mpc_refs_kpa/data[7]" color="#bcbd22"/>
           <curve name="/controller/b1/sensors_kpa/data[3]" color="#ff7f0e"/>
          </plot>
         </DockArea>
        </DockSplitter>
-       <DockSplitter sizes="0.502003;0.497997" orientation="|" count="2">
+       <DockSplitter count="2" sizes="0.502003;0.497997" orientation="|">
         <DockArea name="...">
-         <plot style="Lines" flip_x="false" flip_y="false" mode="TimeSeries">
-          <range bottom="50.099852" left="6.524779" top="101.306967" right="11.520977"/>
+         <plot flip_y="false" flip_x="false" style="Lines" mode="TimeSeries">
+          <range left="11.768056" right="16.765428" bottom="50.067658" top="102.626911"/>
           <limitY/>
           <curve name="/controller/mpc_refs_kpa/data[10]" color="#1ac938"/>
           <curve name="/controller/b2/sensors_kpa/data[2]" color="#17becf"/>
          </plot>
         </DockArea>
         <DockArea name="...">
-         <plot style="Lines" flip_x="false" flip_y="false" mode="TimeSeries">
-          <range bottom="50.085964" left="6.524779" top="101.876355" right="11.520977"/>
+         <plot flip_y="false" flip_x="false" style="Lines" mode="TimeSeries">
+          <range left="11.768056" right="16.765428" bottom="50.056927" top="103.066892"/>
           <limitY/>
           <curve name="/controller/mpc_refs_kpa/data[11]" color="#ff7f0e"/>
           <curve name="/controller/b2/sensors_kpa/data[3]" color="#bcbd22"/>
@@ -126,7 +126,7 @@
  <!-- - - - - - - - - - - - - - - -->
  <Plugins>
   <plugin ID="DataLoad CSV">
-   <parameters delimiter="0" time_axis=""/>
+   <parameters time_axis="" delimiter="0"/>
   </plugin>
   <plugin ID="DataLoad MCAP"/>
   <plugin ID="DataLoad ROS2 bags">
@@ -144,7 +144,7 @@
    <max_array_size value="100"/>
    <boolean_strings_to_number value="true"/>
    <remove_suffix_from_strings value="true"/>
-   <selected_topics value="/controller/b0/sensors_kpa;/controller/b1/sensors_kpa;/controller/b2/sensors_kpa;/controller/mpc_refs_kpa;/controller/vol_refs_ml;/teensy/b0/pwm_cmd;/teensy/b0/sensors;/teensy/b1/pwm_cmd;/teensy/b1/sensors;/teensy/b2/pwm_cmd;/teensy/b2/sensors;/controller/active_volumes_ml"/>
+   <selected_topics value="/controller/active_volumes_ml;/controller/b0/sensors_kpa;/controller/b1/sensors_kpa;/controller/b2/sensors_kpa;/controller/mpc_refs_kpa;/controller/vol_refs_ml;/board/b1/pwm_cmd;/board/b0/pwm_cmd;/board/b2/pwm_cmd"/>
   </plugin>
   <plugin ID="UDP Server"/>
   <plugin ID="WebSocket Server"/>

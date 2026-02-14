@@ -2,117 +2,122 @@ import socket
 import struct
 import time
 import sys
+import select
 
 # --- 설정 ---
 HOST = '0.0.0.0'
-PORT = 2287
+PORT = 2291
 FORMAT_STRING = '>20H' # Big-Endian, 20개 uint16
 NUM_INTEGERS = 20
 BUFFER_SIZE = NUM_INTEGERS * 2
 
-# === [사용자 설정 구간: 변화 패턴] ===
-# 2초마다 적용할 변화량 리스트
-CHANGE_PATTERN = [3.9, -3.9, 1.9, -1.9] 
-
-# 한 패턴이 지속될 시간 (초)
+# === [사용자 설정 구간] ===
+CHANGE_PATTERN = [1.0, -1.0, 2.0, -2.0] 
 PHASE_DURATION = 1.0 
-
-# 루프 주기 (초) -> 0.1초면 10Hz
 LOOP_PERIOD = 0.004
-# ==================================
+# ========================
 
-# 1. 압력 값 (고정) - kPa 단위
-# C++ 스케일: 1.0 / 327.675 -> 보내는 값에 327.675 곱함
 base_ref_kpa = [
     151.32, 151.32, 151.32, 151.32,
     151.32, 151.32, 151.32, 151.32,
     51.32,  51.32,  51.32,  51.32
 ]
 
-# 2. 부피 초기값 (가변) - mL 단위
-# C++ 스케일: 1.0 / 32.7675 -> 보내는 값에 32.7675 곱함
 start_volume_ml = [1000,1000,1000,1000,1000,1000,1000,1000]
 
 def start_server():
-    print(f"TCP 레퍼런스 서버 시작 중... ({HOST}:{PORT})")
+    print(f"TCP 멀티 캐스트 서버 시작 ({HOST}:{PORT})")
+    print(f"패턴: {CHANGE_PATTERN}, 주기: {PHASE_DURATION}초")
+
+    # 서버 소켓 설정
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_socket.bind((HOST, PORT))
+    server_socket.listen(5)
     
-    # 현재 상태를 추적하기 위한 변수들 (초기값 복사)
+    # [핵심] 논블로킹 모드로 설정 (연결 요청이 없어도 루프가 멈추지 않음)
+    server_socket.setblocking(False)
+
+    # 연결된 클라이언트들을 관리할 리스트
+    connected_clients = []
+
+    # 물리 상태 변수
     current_volumes_ml = list(start_volume_ml)
-    
-    # 패턴 인덱스 (0, 1, 2 ...)
     pattern_idx = 0
-    
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            s.bind((HOST, PORT))
-        except OSError as e:
-            print(f"바인딩 오류: {e}")
-            sys.exit(1)
-            
-        s.listen()
-        print(f"패턴 설정: {CHANGE_PATTERN}, 주기: {PHASE_DURATION}초")
-        print("연결 대기 중...")
+    last_phase_time = time.time()
 
+    try:
         while True:
+            cycle_start = time.time()
+
+            # ----------------------------------------
+            # 1. 새로운 연결 처리 (논블로킹 accept)
+            # ----------------------------------------
             try:
-                conn, addr = s.accept()
-                with conn:
-                    print(f"클라이언트 연결됨: {addr}")
-                    
-                    # 연결될 때마다 타이머 리셋
-                    last_phase_time = time.time()
-                    pattern_idx = 0 
-                    
-                    while True:
-                        now = time.time()
-                        
-                        # --- [패턴 변경 로직] ---
-                        # 설정한 시간이 지나면 다음 패턴으로 변경
-                        if now - last_phase_time >= PHASE_DURATION:
-                            pattern_idx = (pattern_idx + 1) % len(CHANGE_PATTERN)
-                            last_phase_time = now
-                            print(f"[Info] 패턴 변경: 틱당 {CHANGE_PATTERN[pattern_idx]}씩 변화")
+                conn, addr = server_socket.accept()
+                conn.setblocking(False) # 클라이언트 소켓도 논블로킹
+                connected_clients.append(conn)
+                print(f"[접속] 새로운 클라이언트 연결: {addr} (현재 총 {len(connected_clients)}개)")
+            except BlockingIOError:
+                # 연결 요청이 없으면 그냥 넘어감
+                pass
 
-                        # 현재 적용할 변화량
-                        delta = CHANGE_PATTERN[pattern_idx]
-                        
-                        # --- [값 업데이트] ---
-                        # 모든 부피 채널에 delta 더하기
-                        for i in range(len(current_volumes_ml)):
-                            current_volumes_ml[i] += delta
-                            
-                            # (안전장치) 0 미만이거나 너무 커지지 않도록 클램핑 (0 ~ 3000 mL)
-                            # 필요 없다면 제거하셔도 됩니다.
-                            if current_volumes_ml[i] < 0: current_volumes_ml[i] = 0
-                            if current_volumes_ml[i] > 3000: current_volumes_ml[i] = 3000
+            # ----------------------------------------
+            # 2. 물리 로직 계산 (모든 클라이언트 공통)
+            # ----------------------------------------
+            now = time.time()
+            if now - last_phase_time >= PHASE_DURATION:
+                pattern_idx = (pattern_idx + 1) % len(CHANGE_PATTERN)
+                last_phase_time = now
+                print(f"[Info] 패턴 변경: {CHANGE_PATTERN[pattern_idx]} (연결된 클라이언트: {len(connected_clients)})")
 
-                        # --- [데이터 패킹 준비] ---
-                        # 1. 압력 값 변환 (float kpa -> uint16 scaled)
-                        out_refs = [int(x * 327.675) for x in base_ref_kpa]
-                        
-                        # 2. 부피 값 변환 (float ml -> uint16 scaled)
-                        out_vols = [int(x * 32.7675) for x in current_volumes_ml]
-                        
-                        # 합치기 (총 20개)
-                        final_values = out_refs + out_vols
-                        
-                        # 바이너리 패킹
-                        packed_data = struct.pack(FORMAT_STRING, *final_values)
-                        
-                        # 전송
-                        conn.sendall(packed_data)
-                        
-                        # 로그 출력 (첫 번째 부피 값만 모니터링)
-                        # print(f"Sent Vol[0]: {current_volumes_ml[0]:.1f} mL (Delta: {delta})")
-                        
-                        time.sleep(LOOP_PERIOD)
-                        
-            except Exception as e:
-                print(f"연결 끊김 또는 오류: {e}")
-                print("재접속 대기 중...")
-                # 연결이 끊기면 부피를 초기값으로 리셋하고 싶으면 아래 주석 해제
-                # current_volumes_ml = list(start_volume_ml)
+            delta = CHANGE_PATTERN[pattern_idx]
+
+            for i in range(len(current_volumes_ml)):
+                current_volumes_ml[i] += delta
+                if current_volumes_ml[i] < 0: current_volumes_ml[i] = 0
+                if current_volumes_ml[i] > 3000: current_volumes_ml[i] = 3000
+
+            # ----------------------------------------
+            # 3. 데이터 패킹
+            # ----------------------------------------
+            out_refs = [int(x * 327.675) for x in base_ref_kpa]
+            out_vols = [int(x * 32.7675) for x in current_volumes_ml]
+            final_values = out_refs + out_vols
+            packed_data = struct.pack(FORMAT_STRING, *final_values)
+
+            # ----------------------------------------
+            # 4. 모든 클라이언트에게 전송 (Broadcast)
+            # ----------------------------------------
+            # 리스트를 복사해서 순회 (순회 도중 제거 발생 시 안전 위해)
+            for client in connected_clients[:]:
+                try:
+                    client.sendall(packed_data)
+                except (BlockingIOError, BrokenPipeError, ConnectionResetError):
+                    # 전송 실패 시 연결 끊긴 것으로 간주하고 리스트에서 제거
+                    print(f"[해제] 클라이언트 연결 끊김")
+                    client.close()
+                    connected_clients.remove(client)
+                except Exception as e:
+                    print(f"[오류] 전송 중 예외 발생: {e}")
+                    client.close()
+                    if client in connected_clients:
+                        connected_clients.remove(client)
+
+            # ----------------------------------------
+            # 5. 주기 맞추기 (Loop Rate)
+            # ----------------------------------------
+            elapsed = time.time() - cycle_start
+            sleep_time = LOOP_PERIOD - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+    except KeyboardInterrupt:
+        print("\n서버 종료 중...")
+    finally:
+        for client in connected_clients:
+            client.close()
+        server_socket.close()
 
 if __name__ == "__main__":
     start_server()
